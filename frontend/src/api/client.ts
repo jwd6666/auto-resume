@@ -28,6 +28,7 @@ export interface AIConfig {
   base_url: string;
   model: string;
   resume: string;
+  expect_jd: string;
 }
 
 export interface TaskInfo {
@@ -91,6 +92,8 @@ export const api = {
     http<{ items: { job_key: string; greeted_at: string; title: string; company: string }[] }>(
       `/api/tasks/${id}/greeted?limit=${limit}`
     ),
+  resetAiJudged: (id: string) =>
+    http<{ ok: boolean; deleted: number }>(`/api/tasks/${id}/reset-ai-judged`, { method: 'POST' }),
 };
 
 export function openTaskWS(taskId: string, onMessage: (m: any) => void): WebSocket {

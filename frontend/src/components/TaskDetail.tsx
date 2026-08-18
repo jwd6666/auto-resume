@@ -15,8 +15,23 @@ export function TaskDetail({ task, onUpdate }: Props) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [tab, setTab] = useState<'logs' | 'greeted'>('logs');
   const [greeted, setGreeted] = useState<{ title: string; company: string; greeted_at: string }[]>([]);
+  const [resetting, setResetting] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+
+  const handleResetAi = async () => {
+    if (resetting) return;
+    if (!confirm('确定重置今日 AI 判断缓存？重置后所有岗位会重新调用 AI 判断，可能消耗较多 token。')) return;
+    setResetting(true);
+    try {
+      const r = await api.resetAiJudged(task.id);
+      alert(`已清除 ${r.deleted} 条 AI 判断记录`);
+    } catch (e: any) {
+      alert('重置失败: ' + e.message);
+    } finally {
+      setResetting(false);
+    }
+  };
 
   useEffect(() => {
     setLogs([]);
@@ -63,6 +78,15 @@ export function TaskDetail({ task, onUpdate }: Props) {
           <h1 className="text-lg font-semibold">{task.name}</h1>
           <StatusBadge status={task.status} />
           <span className="text-sm text-slate-400">今日已招呼 {task.sent_today} / {task.daily_limit}</span>
+          {task.ai_config?.enabled && (
+            <button
+              onClick={handleResetAi}
+              disabled={resetting}
+              className="ml-auto px-2 py-0.5 text-xs rounded border border-slate-600 text-slate-300 hover:bg-slate-700 disabled:opacity-50"
+            >
+              {resetting ? '重置中…' : '重置AI判断'}
+            </button>
+          )}
         </div>
         {/* 子任务列表（多个子任务时分行展示）；老任务（filter）回退兼容 */}
         {task.sub_tasks && task.sub_tasks.length > 0 ? (

@@ -45,6 +45,7 @@ class AIConfig(BaseModel):
     base_url: str = Field(default="", description="API Base URL，留空按 provider 自动填充")
     model: str = Field(default="", description="模型名，留空按 provider 自动填充")
     resume: str = Field(default="", description="个人简介/技能摘要，用于生成更有针对性的招呼语")
+    expect_jd: str = Field(default="", description="期望岗位描述，AI 会将实际 JD 与此描述比对判断是否匹配")
 
 
 class TaskCreate(BaseModel):
@@ -56,7 +57,7 @@ class TaskCreate(BaseModel):
     sub_tasks: List[SubTask] = []
     filter: Optional[JobFilter] = None  # 兼容老前端：只传 filter 时后端会包成单子任务
     greetings: List[str] = []
-    interval_seconds: int = Field(default=30, ge=10, le=600)
+    interval_seconds: int = Field(default=5, ge=5, le=600)
     daily_limit: int = Field(default=50, ge=1, le=2000)
     click_delay_seconds: int = Field(default=5, ge=0, le=30)
     ai_config: Optional[AIConfig] = None

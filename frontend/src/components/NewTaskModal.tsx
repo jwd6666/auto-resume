@@ -87,7 +87,7 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
   const [name, setName] = useState('');
   const [subs, setSubs] = useState<SubFormState[]>([newSub()]);
   const [greetings, setGreetings] = useState('');
-  const [interval, setInterval] = useState(10);
+  const [interval, setInterval] = useState(5);
   const [dailyTotal, setDailyTotal] = useState(150);
   const [clickDelay, setClickDelay] = useState(5);
   const [aiEnabled, setAiEnabled] = useState(false);
@@ -96,6 +96,7 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
   const [aiBaseUrl, setAiBaseUrl] = useState('');
   const [aiModel, setAiModel] = useState('');
   const [aiResume, setAiResume] = useState('');
+  const [aiExpectJd, setAiExpectJd] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -103,7 +104,7 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
     setName('');
     setSubs([newSub()]);
     setGreetings('');
-    setInterval(10);
+    setInterval(5);
     setDailyTotal(150);
     setClickDelay(5);
     setAiEnabled(false);
@@ -112,6 +113,7 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
     setAiBaseUrl('');
     setAiModel('');
     setAiResume('');
+    setAiExpectJd('');
     setSubmitting(false);
     setError(null);
   };
@@ -130,6 +132,7 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
     setAiBaseUrl(ai?.base_url || '');
     setAiModel(ai?.model || '');
     setAiResume(ai?.resume || '');
+    setAiExpectJd(ai?.expect_jd || '');
     const list = (t.sub_tasks && t.sub_tasks.length > 0)
       ? t.sub_tasks
       : (t.filter ? [{ filter: t.filter, limit: t.daily_limit }] : []);
@@ -182,7 +185,7 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
       name: name.trim(),
       sub_tasks,
       greetings: greetings.split('\n').map((s) => s.trim()).filter(Boolean),
-      interval_seconds: Math.max(10, Math.min(600, interval)),
+      interval_seconds: Math.max(5, Math.min(600, interval)),
       daily_limit: Math.max(1, Math.min(2000, dailyTotal)),
       click_delay_seconds: Math.max(0, Math.min(30, clickDelay)),
       ai_config: {
@@ -192,6 +195,7 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
         base_url: aiBaseUrl.trim(),
         model: aiModel.trim(),
         resume: aiResume.trim(),
+        expect_jd: aiExpectJd.trim(),
       },
     };
   };
@@ -422,15 +426,24 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
                     placeholder="如：3年Python后端开发经验，熟悉 Django/Flask 框架，有微服务架构和 MySQL 优化经验，了解 Docker/K8s 部署"
                   />
                 </Field>
+                <Field label="期望岗位描述（选填，AI 据此判断 JD 是否匹配）">
+                  <textarea
+                    value={aiExpectJd}
+                    onChange={(e) => setAiExpectJd(e.target.value)}
+                    rows={4}
+                    className="input"
+                    placeholder="如：AI 全栈工程师，负责大模型应用开发、Agent/RAG 系统构建、前后端开发。岗位必须使用编程语言做软件/模型工程开发，不包含 AI 内容创作（短剧/漫画/绘画）、AI 运营推广/直播/销售等非工程岗。"
+                  />
+                </Field>
               </>
             )}
           </div>
 
           <div className="grid grid-cols-3 gap-3">
-            <Field label="间隔秒数（10-600）">
+            <Field label="间隔秒数（5-600）">
               <input
                 type="number"
-                min={10}
+                min={5}
                 max={600}
                 value={interval}
                 onChange={(e) => setInterval(Number(e.target.value))}

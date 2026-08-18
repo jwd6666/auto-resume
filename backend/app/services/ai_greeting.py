@@ -41,17 +41,24 @@ _PROVIDER_DEFAULTS = {
 _SYSTEM_PROMPT = (
     "你是一位资深求职打招呼助手。你的任务是根据招聘JD和求职者的背景，判断匹配度并生成让HR觉得求职者很适合该岗位的招呼语。\n\n"
     "## 工作流程\n"
-    "1. 仔细分析JD，提取核心要求：岗位关键词、必备技能、经验要求、加分项\n"
-    "2. 将JD要求与求职者背景进行匹配评估\n"
+    "1. 仔细分析JD，提取核心要求：岗位实际职责、必备技能栈、经验要求、行业方向\n"
+    "2. 将JD的核心职责和技能要求与求职者的背景进行严格匹配\n"
     "3. 根据匹配结果生成招呼语或返回SKIP\n\n"
-    "## 规则\n"
-    "- 不匹配（核心技能/经验差距过大）：只回复 SKIP\n"
-    "- 匹配：直接回复打招呼内容，要求：\n"
-    "  * 不超过100字\n"
-    "  * 针对JD中的具体要求，提及求职者与之匹配的技能或经验\n"
-    "  * 展示对岗位的理解和诚意\n"
-    "  * 语气自然、真诚、专业，避免模板化\n"
-    "  * 适当提及JD中的关键技术词或业务方向，体现契合度\n\n"
+    "## 严格匹配规则（重要）\n"
+    "- 匹配判断必须基于岗位实际职责和技能栈，而不是关键词字面相似\n"
+    "- 求职意向为「AI 全栈/全栈开发」时，匹配的岗位必须是：使用AI技术做软件开发/工程的岗位，"
+    "职责包含大模型应用开发、Agent开发、RAG、前后端开发、模型微调训练等\n"
+    "- 以下类型必须 SKIP（即使含「AI」字样）：\n"
+    "  * AI内容创作（短剧编剧、漫画/漫剧制作、AI绘画生图等）\n"
+    "  * AI产品运营/推广/直播/销售\n"
+    "  * 行业与AI结合但无需工程开发（法律/医疗/教育等领域的AI运营）\n"
+    "  * JD核心技能不含编程语言/框架/模型开发的岗位\n"
+    "- 核心技能或职责不重合的岗位一律 SKIP，宁缺毋滥\n\n"
+    "## 招呼语要求（仅匹配时）\n"
+    "- 不超过100字\n"
+    "- 针对JD中的具体技术要求，提及求职者与之匹配的技能或经验\n"
+    "- 语气自然、真诚、专业，避免模板化\n"
+    "- 提及JD中的关键技术词或业务方向，体现契合度\n\n"
     "## 注意事项\n"
     "- 不要输出 MATCH、匹配、不匹配等判断标签\n"
     "- 不要加引号、前缀、解释或任何多余文字\n"
@@ -106,7 +113,7 @@ def _call_api(base_url: str, model: str, api_key: str, system_prompt: str, user_
         raise RuntimeError(f"AI API 调用失败: {e}")
 
 
-async def generate_greeting(config: AIConfig, jd_text: str, keyword: str = "", resume: str = "") -> Tuple[bool, str]:
+async def generate_greeting(config: AIConfig, jd_text: str, keyword: str = "", resume: str = "", expect_jd: str = "") -> Tuple[bool, str]:
     """根据 JD 文本调用 AI 判断是否匹配并生成招呼语。
 
     参数：
@@ -114,6 +121,7 @@ async def generate_greeting(config: AIConfig, jd_text: str, keyword: str = "", r
         jd_text: 岗位 JD 全文
         keyword: 求职搜索关键词，如 "Python 后端"
         resume: 求职者个人简介/技能摘要（可选），用于生成更有针对性的招呼语
+        expect_jd: 期望岗位描述（可选），AI 会将实际 JD 与此描述比对，判断岗位是否匹配
 
     返回 (should_greet, greeting)：
     - should_greet=True, greeting=AI 生成的招呼语
@@ -129,6 +137,8 @@ async def generate_greeting(config: AIConfig, jd_text: str, keyword: str = "", r
 
     # 构造结构化的用户消息，让 AI 能充分理解 JD 要求和求职者背景
     sections = [f"## 求职意向\n{keyword or '未指定'}"]
+    if expect_jd and expect_jd.strip():
+        sections.append(f"## 期望岗位描述（匹配判断依据）\n{expect_jd.strip()[:1500]}\n\n请将下方「岗位JD信息」与此期望岗位描述严格比对，职责/技能栈不重合则输出 SKIP。")
     if resume and resume.strip():
         sections.append(f"## 求职者背景\n{resume.strip()[:1000]}")
     sections.append(f"## 岗位JD信息\n{jd_text}")

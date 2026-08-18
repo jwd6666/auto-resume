@@ -20,7 +20,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-DEFAULT_INTERVAL_SECONDS = 30
+DEFAULT_INTERVAL_SECONDS = 5
 DEFAULT_DAILY_LIMIT = 10
 DEFAULT_CLICK_DELAY_SECONDS = 5  # 点开左侧岗位 → 等多久 → 点右侧「立即沟通」
 BOSS_HOME = "https://www.zhipin.com/"

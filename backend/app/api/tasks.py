@@ -87,6 +87,13 @@ async def task_greeted(task_id: str, limit: int = 100) -> dict:
     return {"items": storage.list_greeted_today(task_id, limit)}
 
 
+@router.post("/{task_id}/reset-ai-judged")
+async def reset_ai_judged(task_id: str) -> dict:
+    """清除该任务今日所有 AI 判断缓存，让 AI 重新判断所有岗位。"""
+    deleted = storage.reset_ai_judged(task_id)
+    return {"ok": True, "deleted": deleted}
+
+
 @router.websocket("/ws/{task_id}")
 async def task_ws(ws: WebSocket, task_id: str) -> None:
     await ws.accept()

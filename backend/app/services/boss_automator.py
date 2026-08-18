@@ -76,15 +76,32 @@ def clear_profile(task_id: str) -> None:
 # BOSS 直聘城市名 → 编码映射（兼容前端可能传中文的旧任务）
 _CITY_NAME_CODES = {
     "全国": "100010000",
+    # 一线 / 新一线
     "北京": "101010100", "上海": "101020100", "广州": "101280100", "深圳": "101280600",
     "杭州": "101210100", "天津": "101030100", "武汉": "101200100", "成都": "101270100",
-    "西安": "101110100", "苏州": "101190400", "南京": "101190100", "福州": "101230100",
-    "厦门": "101230200", "东莞": "101280200", "合肥": "101220100", "郑州": "101180100",
-    "重庆": "101040100", "南昌": "101240100", "南宁": "101300100", "哈尔滨": "101050100",
-    "长春": "101060100", "沈阳": "101070100", "大连": "101070200", "济南": "101120100",
-    "青岛": "101120200", "呼和浩特": "101080100", "石家庄": "101090100", "乌鲁木齐": "101130100",
-    "兰州": "101160100", "银川": "101170100", "长沙": "101250100", "贵阳": "101260100",
-    "昆明": "101290100", "海口": "101310100",
+    "西安": "101110100", "苏州": "101190400", "南京": "101190100", "重庆": "101040100",
+    "长沙": "101250100", "郑州": "101180100", "合肥": "101220100", "济南": "101120100",
+    "青岛": "101120200", "沈阳": "101070100", "大连": "101070200", "哈尔滨": "101050100",
+    "长春": "101060100", "昆明": "101290100", "贵阳": "101260100", "南宁": "101300100",
+    "福州": "101230100", "厦门": "101230200", "石家庄": "101090100", "太原": "101100100",
+    "南昌": "101240100", "海口": "101310100", "兰州": "101160100", "银川": "101170100",
+    "呼和浩特": "101080100", "乌鲁木齐": "101130100", "拉萨": "101140100", "西宁": "101150100",
+    # 广东
+    "东莞": "101281600", "佛山": "101280800", "珠海": "101280700", "中山": "101281700",
+    "惠州": "101280300", "江门": "101281100", "肇庆": "101280900", "湛江": "101281000",
+    "汕头": "101280500", "茂名": "101282000", "揭阳": "101281900", "潮州": "101281500",
+    "清远": "101281300", "阳江": "101281800", "韶关": "101280200", "河源": "101281200",
+    "梅州": "101280400", "汕尾": "101282100", "云浮": "101281400",
+    # 广西
+    "桂林": "101300500", "柳州": "101300300", "北海": "101301300", "玉林": "101300900",
+    "梧州": "101300600", "钦州": "101301100", "贵港": "101300800", "百色": "101301000",
+    "防城港": "101301400", "河池": "101301200", "来宾": "101300400", "贺州": "101300700",
+    "崇左": "101300200",
+    # 其他 GDP 较高城市
+    "宁波": "101210400", "温州": "101210700", "无锡": "101190200", "南通": "101190600",
+    "常州": "101191100", "绍兴": "101210500", "嘉兴": "101210300", "烟台": "101120500",
+    "潍坊": "101120600", "泉州": "101230500", "洛阳": "101180900", "徐州": "101190300",
+    "唐山": "101090500", "芜湖": "101220300", "株洲": "101250300", "保定": "101090200",
 }
 
 
@@ -305,6 +322,7 @@ class BossAutomator:
             await self._navigate_search()
 
             empty_rounds = 0  # 连续空页计数：达到阈值则放弃当前子任务
+            all_skipped_rounds = 0  # 连续全部跳过的轮数：达到阈值说明无新岗位
 
             while not self._stop_event.is_set():
                 await self._pause_event.wait()
@@ -335,6 +353,7 @@ class BossAutomator:
                     continue
                 empty_rounds = 0
 
+                sent_this_round = 0
                 for card in cards:
                     if self._stop_event.is_set(): return
                     await self._pause_event.wait()
@@ -344,6 +363,7 @@ class BossAutomator:
                         break
                     ok = await self._try_greet_card(card)
                     if ok:
+                        sent_this_round += 1
                         sub_sent += 1
                         total_sent += 1
                         await self._push_status("running", {
@@ -354,10 +374,20 @@ class BossAutomator:
                         })
                         await self._sleep_with_jitter(self.interval)
 
-                # 当前页处理完，翻页继续
-                if not await self._goto_next_page():
-                    await self._log("INFO", "已到末页，回到第一页继续")
-                    await self._navigate_search()
+                # 本轮有成功招呼 → 重置跳过计数，正常翻页
+                if sent_this_round > 0:
+                    all_skipped_rounds = 0
+                    if not await self._goto_next_page():
+                        await self._log("INFO", "已到末页，回到第一页继续")
+                        await self._navigate_search()
+                else:
+                    # 本轮全部跳过 → 尝试滚动列表加载更多
+                    all_skipped_rounds += 1
+                    if all_skipped_rounds >= 5:
+                        await self._log("WARN", f"连续 {all_skipped_rounds} 轮全部跳过，无新岗位，子任务结束")
+                        break
+                    await self._log("INFO", f"本轮全部跳过，滚动加载更多岗位（第 {all_skipped_rounds} 次）")
+                    await self._scroll_list_for_more()
 
         await self._log("SUCCESS", "所有子任务完成")
         await self._push_status("finished", {"sent_today": total_sent})
@@ -467,6 +497,12 @@ class BossAutomator:
             await self._log("INFO", f"[跳过-本地已记录] {title} @ {company}")
             return False
 
+        # AI 缓存：今日已被 AI 判断过且不匹配的岗位，直接跳过，不点击卡片浪费等待
+        if self.ai_config and self.ai_config.enabled and self.ai_config.api_key:
+            if storage.has_ai_judged_today(self.task_id, key):
+                await self._log("INFO", f"[AI-跳过] 今日已判断过，不重复调用：{title} @ {company}")
+                return False
+
         text_blob = f"{title} {company} {card.get('tags','')}"
         if _matches_blacklist(text_blob, self.filter.exclude_keywords):
             await self._log("INFO", f"[跳过-黑名单] {title} @ {company}")
@@ -525,7 +561,11 @@ class BossAutomator:
                 try:
                     keyword = self.filter.keyword or ""
                     await self._log("INFO", f"[AI] 正在根据 JD 判断匹配并生成招呼语...")
-                    should_greet, greeting = await generate_greeting(self.ai_config, jd_text, keyword, self.ai_config.resume)
+                    should_greet, greeting = await generate_greeting(self.ai_config, jd_text, keyword, self.ai_config.resume, self.ai_config.expect_jd)
+                    # 无论匹配与否，都记录 AI 判断结果，避免同岗位今日重复调用
+                    job_key = _job_key(card.get("href", ""))
+                    if job_key:
+                        storage.mark_ai_judged(self.task_id, job_key, should_greet)
                     if not should_greet:
                         await self._log("INFO", f"[AI-跳过] JD 与求职意向不匹配：{title}")
                         return False
@@ -588,27 +628,23 @@ class BossAutomator:
             greeting_sent = chat_sent
         sent_ok = dialog_handled or greeting_sent
 
-        # 7. 如果当前页已导航离开列表页（如点了"继续沟通"跳到聊天页），回到搜索页
+        # 7. 如果当前页已导航离开列表页（如点了"继续沟通"跳到聊天页），返回上一页继续
+        # 用 go_back 而非 _navigate_search：保持当前分页位置和滚动位置，避免回到第一页从头开始
         try:
             current_url = page.url
             if "/job" not in current_url and "/geek" not in current_url:
-                await self._log("INFO", f"[返回] 页面已离开列表页，重新导航到搜索页")
-                await self._navigate_search()
+                await self._log("INFO", f"[返回] 页面已离开列表页，返回上一页继续搜索")
+                await page.go_back(wait_until="domcontentloaded")
+                await page.wait_for_timeout(1500)
+                # 兜底：go_back 后仍不在列表页，才重新导航
+                if "/job" not in page.url and "/geek" not in page.url:
+                    await self._log("WARN", "[返回] 返回失败，重新导航到搜索页")
+                    await self._navigate_search()
         except Exception:
             pass
 
-        # 8. 滚动到列表顶部 + 等 N 秒（默认 5），再交回主循环
+        # 8. 等 N 秒（默认 5），再交回主循环（不滚动到顶部，保持当前位置继续向下遍历）
         if sent_ok:
-            try:
-                await page.evaluate(
-                    """() => {
-                      const list = document.querySelector('.job-list-container, .recommend-job-list, .job-list-box');
-                      if (list) list.scrollTo({top: 0, behavior: 'instant'});
-                      window.scrollTo({top: 0, behavior: 'instant'});
-                    }"""
-                )
-            except Exception:
-                pass
             await asyncio.sleep(self.click_delay_seconds)
         return sent_ok
 
@@ -900,6 +936,22 @@ class BossAutomator:
             return bool(ok)
         except Exception:
             return False
+
+    async def _scroll_list_for_more(self) -> None:
+        """向下滚动列表容器，触发 BOSS 懒加载/无限滚动加载更多岗位。"""
+        page = self._page
+        assert page
+        try:
+            await page.evaluate(
+                """() => {
+                  const list = document.querySelector('.job-list-container, .recommend-job-list, .job-list-box');
+                  if (list) list.scrollTo({top: list.scrollHeight, behavior: 'smooth'});
+                  window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});
+                }"""
+            )
+            await page.wait_for_timeout(2000)
+        except Exception:
+            pass
 
     def _pick_greeting(self) -> Optional[str]:
         if not self.greetings: return None

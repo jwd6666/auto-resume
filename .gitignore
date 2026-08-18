@@ -34,3 +34,5 @@ Thumbs.db
 build/
 release/
 .electron-cache/
+backend/dist/
+*.tsbuildinfo

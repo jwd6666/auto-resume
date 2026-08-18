@@ -60,6 +60,15 @@ def init_db() -> None:
                 PRIMARY KEY (task_id, job_key, day)
             );
             CREATE INDEX IF NOT EXISTS idx_greeted_day ON greeted_jobs(task_id, day);
+            CREATE TABLE IF NOT EXISTS ai_judged_jobs(
+                task_id TEXT NOT NULL,
+                job_key TEXT NOT NULL,
+                day TEXT NOT NULL,
+                judged_at TEXT NOT NULL,
+                matched INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (task_id, job_key, day)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ai_judged_day ON ai_judged_jobs(task_id, day);
             """
         )
         # 兼容已有库：补字段（重复执行幂等，绝不删除老字段）
@@ -260,3 +269,40 @@ def list_greeted_today(task_id: str, limit: int = 100) -> List[dict]:
         d["company"] = _clean_title(d.get("company"))
         items.append(d)
     return items
+
+
+def has_ai_judged_today(task_id: str, job_key: str) -> bool:
+    """该岗位今日是否已被 AI 判断过（匹配或跳过均算）。"""
+    today = date.today().isoformat()
+    with transaction() as c:
+        row = c.execute(
+            "SELECT 1 FROM ai_judged_jobs WHERE task_id=? AND job_key=? AND day=?",
+            (task_id, job_key, today),
+        ).fetchone()
+    return row is not None
+
+
+def reset_ai_judged(task_id: str) -> int:
+    """清除该任务今日所有 AI 判断记录，让 AI 重新判断所有岗位。返回删除条数。"""
+    today = date.today().isoformat()
+    with transaction() as c:
+        cur = c.execute(
+            "DELETE FROM ai_judged_jobs WHERE task_id=? AND day=?",
+            (task_id, today),
+        )
+    return cur.rowcount if cur else 0
+
+
+def mark_ai_judged(task_id: str, job_key: str, matched: bool) -> None:
+    """记录一次 AI 判断结果，避免同岗位在同一天重复调用 AI 浪费 token。"""
+    today = date.today().isoformat()
+    from datetime import datetime
+    ts = datetime.now().isoformat(timespec="seconds")
+    with transaction() as c:
+        c.execute(
+            """
+            INSERT OR IGNORE INTO ai_judged_jobs(task_id, job_key, day, judged_at, matched)
+            VALUES(?, ?, ?, ?, ?)
+            """,
+            (task_id, job_key, today, ts, 1 if matched else 0),
+        )
