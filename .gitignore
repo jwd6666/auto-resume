@@ -16,12 +16,25 @@ venv/
 *.egg-info/
 
 # 用户数据：每个账号的浏览器 profile（含 cookie），绝对不上传
+backend/app/data/resume_store/
+backend/app/data/user_*
+backend/app/logs/
 backend/data/
 backend/logs/
 *.sqlite
 *.db
 
+# API 密钥和敏感配置（含真实密钥，绝对不上传）
+backend/app/services/ai_settings.json
+backend/app/services/*.env
+backend/app/services/*.key
+
+# 简历样本和导出文件（含个人隐私）
+*.html
+backend/data/resume_store/
+
 # IDE
+.deveco/
 .vscode/
 .idea/
 *.swp

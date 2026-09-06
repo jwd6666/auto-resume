@@ -8,6 +8,10 @@
 - ✅ 已招呼幂等：SQLite 记录每日已招呼岗位，避免重复
 - ✅ 实时日志：WebSocket 推送每条操作日志
 - ✅ 启停可控：开始 / 暂停 / 继续 / 停止
+- ✅ **简历 Agent**：AI 驱动的简历解析、生成、排版、评估与对话编辑
+- ✅ **岗位匹配**：基于能力模型的岗位-简历双向匹配评估
+- ✅ **AI 对话编辑**：通过自然语言对话修改简历内容，支持元素拾取定位
+- ✅ **简历导出**：支持 PDF（系统浏览器打印）和 HTML 导出
 
 > 说明：BOSS 直聘服务条款不允许自动化操作，本项目仅供学习交流。请合理控制频率，账号风险自担。
 
@@ -88,6 +92,8 @@ Electron 窗口出现后，你就能看到主界面。
 
 ## 四、使用流程
 
+### 4.1 自动打招呼
+
 1. **新建账号任务**：左上角「+ 新建账号任务」按钮
 
    - 任务别名：随便起一个，用于区分账号（如「账号 A - Python 后端」）
@@ -110,6 +116,29 @@ Electron 窗口出现后，你就能看到主界面。
    - 实时运行日志（WebSocket 推送）
    - 今日已招呼列表
 
+### 4.2 简历 Agent
+
+1. **进入简历 Agent**：侧边栏点击「简历 Agent」
+
+2. **创建/选择岗位**：在左侧岗位面板填写岗位名称与描述，AI 会自动提取关键要求
+
+3. **上传简历**：
+   - 支持 PDF / Word / 图片，AI 自动解析生成 HTML 简历
+   - 支持批量导入，进度实时显示
+   - 也可通过「AI 生成简历」从零创建
+
+4. **AI 对话编辑**：在右侧对话面板用自然语言指令修改简历
+   - 点击「元素选择」按钮，在预览中拾取 DOM 元素标签插入对话，精准定位修改区域
+   - 对话支持流式输出，实时查看修改效果
+
+5. **简历评估**：点击「岗位匹配评估」，AI 基于能力模型分析简历与岗位的匹配度
+
+6. **重新排版**：对简历进行 AI 驱动的样式重排
+
+7. **导出**：
+   - **导出 PDF**：通过系统浏览器打开简历文件并打印为 PDF（Electron 环境）
+   - **导出 HTML**：下载原始 HTML 文件
+
 ---
 
 ## 五、目录结构
@@ -118,36 +147,78 @@ Electron 窗口出现后，你就能看到主界面。
 auto-resume/
 ├── package.json              # 根：electron + dev 脚本
 ├── electron/                 # Electron 主进程
-│   ├── main.cjs
+│   ├── main.cjs              # 含 openLocalFileAndPrint IPC（PDF导出）
 │   └── preload.cjs
 ├── frontend/                 # React + Vite + TS + Tailwind
 │   ├── package.json
 │   └── src/
 │       ├── App.tsx
-│       ├── api/client.ts     # REST + WebSocket 客户端
+│       ├── api/
+│       │   ├── client.ts     # REST + WebSocket 客户端
+│       │   └── agentApi.ts   # 简历 Agent API（CRUD/上传/对话/SSE流式）
 │       ├── store/useTasks.ts
 │       └── components/
+│           ├── Sidebar.tsx
+│           ├── TopNav.tsx
+│           ├── ModelManagement.tsx
+│           ├── AddModelModal.tsx
+│           ├── AICopyPage.tsx
+│           ├── DashboardTasks.tsx
+│           ├── QuickActions.tsx
+│           ├── ResumeAgentCard.tsx
+│           ├── StatsGrid.tsx
+│           ├── WelcomeBanner.tsx
 │           ├── NewTaskModal.tsx
 │           ├── TaskCard.tsx
 │           ├── TaskDetail.tsx
 │           └── StatusBadge.tsx
+│           └── resume/                   # 简历 Agent 模块
+│               ├── ResumeAgentPage.tsx   # 主页面（三栏布局）
+│               ├── JobPanel.tsx          # 岗位管理
+│               ├── ResumePanel.tsx       # 简历列表/上传/批量管理
+│               ├── ChatPanel.tsx         # AI 对话编辑
+│               ├── EvaluationPanel.tsx   # 岗位匹配评估
+│               ├── ModelSelector.tsx     # AI 模型选择
+│               ├── GenerateResumeModal.tsx
+│               ├── RestyleResumeModal.tsx
+│               ├── AssistantMessageRenderer.tsx
+│               ├── ui.tsx               # 共享 UI 组件库
+│               └── editor/              # 简历编辑器
+│                   ├── ResumeEditor.tsx  # iframe预览/源码/元素拾取/PDF导出
+│                   ├── DomTagExtension.tsx  # Tiptap DOM标签节点
+│                   └── render.ts
 └── backend/                  # Python FastAPI + Playwright
     ├── requirements.txt
     └── app/
         ├── main.py
-        ├── api/tasks.py            # REST + WebSocket 路由
+        ├── api/
+        │   ├── tasks.py            # REST + WebSocket 路由
+        │   └── resume_agent.py     # 简历 Agent 全部 API
         ├── core/{config,logger}.py
-        ├── schemas/task.py         # Pydantic DTO
+        ├── data/
+        │   ├── competency_models.json    # 能力模型定义
+        │   └── interview_question_bank.json
+        ├── schemas/
+        │   ├── task.py             # Pydantic DTO
+        │   ├── resume_models.py    # 简历数据模型
+        │   └── resume_schemas.py   # 简历 API Schema
         └── services/
             ├── boss_automator.py   # 核心：列表抓取 + 自动打招呼
             ├── task_manager.py     # 多任务编排
-            └── storage.py          # SQLite：任务定义 + 已招呼幂等
+            ├── storage.py          # SQLite：任务定义 + 已招呼幂等
+            ├── resume_db.py        # 简历数据库操作
+            ├── resume_parser.py    # 简历文件解析
+            ├── resume_provider.py  # 简历生成/排版/评估/对话
+            ├── resume_html.py      # HTML 渲染
+            └── resume_workspace.py # 文件工作区管理
 ```
 
 数据存放：
 
 - `backend/data/profiles/<task_id>/` 每个任务的浏览器 profile（cookie 等）
 - `backend/data/auto_resume.sqlite` 任务与已招呼记录
+- `backend/data/resumes/` 简历文件工作区（HTML/PDF/上传文件）
+- `backend/data/auto_resume.sqlite` 简历数据（简历、岗位、对话记录）
 - `backend/logs/<task_id>.log` 文件日志
 
 这些目录**不会**被 git 追踪。

@@ -2,17 +2,257 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 应用层打印规则：Ctrl+P 时隐藏整个应用外壳（灰色背景/侧栏/工具栏），
+   只显示 iframe 里的简历白纸，避免第一页打印出灰色、第二页才是白纸 */
+@media print {
+  @page { size: A4; margin: 10mm; }
+  html, body, #root {
+    background: #fff !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+  /* 隐藏所有元素（含灰色背景），仅保留简历 iframe */
+  body * { visibility: hidden !important; }
+  .print-resume-frame,
+  .print-resume-frame * { visibility: visible !important; }
+  /* iframe 定位到打印流顶部，宽度铺满纸张内容区 */
+  .print-resume-frame {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+  /* 祖先容器的固定高度/滚动裁剪在打印时放开，防止 iframe 内容被截断 */
+  #root *:not(.print-resume-frame) {
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+  }
+  .no-print { display: none !important; }
+}
+
 html, body, #root {
   height: 100%;
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Microsoft YaHei", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
-  background: #0b1220;
+  background: #0f172a;
   color: #e2e8f0;
+  overflow: hidden;
 }
 
+#root {
+  overflow: hidden;
+}
+
+/* Scrollbar */
 .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
 .scrollbar-thin::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+.scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+/* Glass card */
+.card {
+  background: linear-gradient(180deg, rgba(30,41,59,0.75) 0%, rgba(15,23,42,0.9) 100%);
+  border: 1px solid rgba(148,163,184,0.08);
+  border-radius: 12px;
+  box-shadow: inset 0 1px 0 0 rgba(255,255,255,0.04), 0 4px 24px rgba(0,0,0,0.2);
+  backdrop-filter: blur(8px);
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+}
+.card:hover {
+  border-color: rgba(14,165,233,0.2);
+  box-shadow: inset 0 1px 0 0 rgba(255,255,255,0.04), 0 4px 32px rgba(14,165,233,0.08);
+}
+.card-lift:hover { transform: translateY(-2px); }
+
+/* Gradient text */
+.text-gradient {
+  background: linear-gradient(135deg, #0ea5e9 0%, #8b5cf6 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Sidebar nav item */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all 150ms ease;
+  position: relative;
+}
+.nav-item:hover { background: rgba(30,41,59,0.6); color: #e2e8f0; }
+.nav-item.active {
+  background: linear-gradient(to right, rgba(2,132,199,0.3), rgba(14,165,233,0.1));
+  color: #ffffff;
+  border: 1px solid rgba(14,165,233,0.25);
+  box-shadow: 0 0 12px rgba(14,165,233,0.1);
+}
+.nav-item::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 50%;
+  transform: translateY(-50%);
+  width: 3px; height: 0;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #0ea5e9, #8b5cf6);
+  transition: height 0.2s ease;
+}
+.nav-item:hover::before { height: 60%; }
+.nav-item.active::before { height: 80%; }
+
+/* Badge new */
+.badge-new {
+  display: inline-flex;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.375rem;
+  font-size: 10px;
+  font-weight: 600;
+  background: linear-gradient(to right, #06b6d4, #0ea5e9);
+  color: #ffffff;
+}
+
+/* Buttons */
+.btn-primary {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem;
+  padding: 0.5rem 1rem; border-radius: 0.5rem;
+  background: linear-gradient(to right, #0284c7, #0ea5e9);
+  color: #ffffff; font-size: 0.875rem; font-weight: 500;
+  transition: all 150ms ease; box-shadow: 0 4px 6px -1px rgba(14,165,233,0.2);
+  border: none; cursor: pointer;
+}
+.btn-primary:hover { background: linear-gradient(to right, #0ea5e9, #38bdf8); }
+
+.btn-upgrade {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem;
+  padding: 0.5rem 1rem; border-radius: 0.5rem;
+  background: linear-gradient(to right, #0284c7, #8b5cf6);
+  color: #ffffff; font-size: 0.875rem; font-weight: 600;
+  transition: all 150ms ease; box-shadow: 0 10px 15px -3px rgba(14,165,233,0.25);
+  border: none; cursor: pointer;
+}
+.btn-upgrade:hover { background: linear-gradient(to right, #0ea5e9, #a78bfa); }
+
+/* Smooth transitions */
+button, a, .nav-item { transition: all 0.2s ease; }
+
+/* Sidebar collapse transition */
+.sidebar-transition { transition: width 0.3s ease; }
+
+/* Collapsed nav item: center icon only */
+.nav-item-collapsed {
+  justify-content: center;
+  padding: 0.5rem 0;
+}
+
+/* Sidebar tooltip for collapsed state */
+.nav-item-collapsed:hover::after {
+  content: attr(title);
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 8px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: #1e293b;
+  color: #e2e8f0;
+  font-size: 12px;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  border: 1px solid rgba(148,163,184,0.12);
+  z-index: 100;
+  pointer-events: none;
+}
+
+/* ── Split pane drag handle ── */
+.split-handle {
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 20;
+  flex-shrink: 0;
+  transition: background 0.2s ease, width 0.2s ease;
+}
+.split-handle::before {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0;
+  left: -3px; right: -3px;
+}
+.split-handle:hover {
+  background: rgba(14,165,233,0.25);
+  width: 5px;
+}
+.split-handle-active {
+  background: rgba(14,165,233,0.4) !important;
+  width: 5px !important;
+  box-shadow: 0 0 8px rgba(14,165,233,0.3);
+}
+
+/* ── Resume preview spacing ── */
+
+/* Selection */
+::selection { background: rgba(14,165,233,0.3); color: #f1f5f9; }
+
+/* Glass nav */
+.glass-nav {
+  background: rgba(15,23,42,0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* ── Tiptap editor ── */
+.tiptap-editor-body {
+  min-height: 72px;
+  max-height: 32vh;
+  overflow-y: auto;
+  padding: 8px 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #e2e8f0;
+  outline: none;
+}
+.tiptap-editor-body img {
+  max-width: 100%;
+  max-height: 140px;
+  border-radius: 4px;
+  object-fit: contain;
+}
+.tiptap-editor-body:empty::before {
+  content: attr(data-placeholder);
+  color: #475569;
+  pointer-events: none;
+}
+.tiptap-editor-body .dom-tag-wrapper {
+  display: inline;
+}
+.dom-tag-capsule {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 7px;
+  border-radius: 5px;
+  font-size: 12px;
+  line-height: 1.5;
+  background: #166534;
+  color: #86efac;
+  border: 1px solid #22c55e33;
+  vertical-align: baseline;
+  user-select: none;
+  white-space: nowrap;
+}

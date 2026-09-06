@@ -1,6 +1,8 @@
 /** 后端 REST/WebSocket 客户端封装。 */
-const API_BASE =
-  (window as any).autoresume?.apiBase || 'http://127.0.0.1:8765';
+// 开发环境（Vite dev server）使用相对路径走 proxy，避免系统代理拦截 localhost 请求
+// 生产环境（Electron）使用 preload 注入的绝对路径
+const isDev = location.port === '5173';
+const API_BASE = isDev ? '' : ((window as any).autoresume?.apiBase || 'http://127.0.0.1:8765');
 
 export type TaskStatus =
   | 'idle' | 'launching' | 'awaiting_login' | 'logged_in' | 'running'

@@ -1,8 +1,12 @@
+import { useState, useEffect, useRef } from 'react';
 import clsx from 'clsx';
-import { Play, Pause, Square, Trash2, LogIn, RefreshCw, Pencil } from 'lucide-react';
+import { Play, Pause, Square, Trash2, LogIn, RefreshCw, Pencil, ChevronDown, FileText } from 'lucide-react';
 import type { TaskInfo } from '../api/client';
+import { openTaskWS } from '../api/client';
 import { cityLabel } from '../constants/cities';
 import { StatusBadge } from './StatusBadge';
+
+interface LogEntry { ts: string; level: string; msg: string; }
 
 interface Props {
   task: TaskInfo;
@@ -17,8 +21,69 @@ interface Props {
   onDelete: () => void;
 }
 
+function InlineLogs({ taskId }: { taskId: string }) {
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const wsRef = useRef<WebSocket | null>(null);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setLogs([]);
+    const ws = openTaskWS(taskId, (m) => {
+      if (m.type === 'snapshot') {
+        setLogs(m.logs || []);
+      } else if (m.type === 'log') {
+        setLogs((prev) => [...prev.slice(-199), m.entry]);
+      }
+    });
+    wsRef.current = ws;
+
+    const ping = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) ws.send('ping');
+    }, 25_000);
+
+    return () => {
+      clearInterval(ping);
+      ws.close();
+      wsRef.current = null;
+    };
+  }, [taskId]);
+
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+  }, [logs.length]);
+
+  return (
+    <div className="mt-2 rounded-lg border border-slate-700/50 bg-slate-950/60 overflow-hidden">
+      <div className="flex items-center gap-1.5 px-2.5 py-1.5 border-b border-slate-700/40">
+        <FileText size={11} className="text-brand-400" />
+        <span className="text-[11px] text-slate-400 font-medium">运行日志</span>
+      </div>
+      <div ref={logRef} className="max-h-32 overflow-y-auto scrollbar-thin px-2.5 py-1.5 font-mono text-[11px] leading-relaxed space-y-0.5">
+        {logs.length === 0 ? (
+          <div className="text-[11px] text-slate-600 py-2 text-center">暂无日志</div>
+        ) : (
+          logs.slice(-50).map((l, i) => (
+            <div key={i} className="flex gap-2">
+              <span className="text-slate-600 shrink-0">{l.ts?.slice(11, 19) || ''}</span>
+              <span className={clsx(
+                'w-14 shrink-0',
+                l.level === 'ERROR' && 'text-red-400',
+                l.level === 'WARN' && 'text-amber-300',
+                l.level === 'SUCCESS' && 'text-emerald-300',
+                l.level === 'INFO' && 'text-slate-400',
+              )}>{l.level}</span>
+              <span className="text-slate-300 break-all">{l.msg}</span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function TaskCard(props: Props) {
   const { task, active } = props;
+  const [expanded, setExpanded] = useState(false);
   const loggingIn = task.status === 'launching' || task.status === 'awaiting_login';
   const running = task.status === 'running';
   const paused = task.status === 'paused';
@@ -40,7 +105,19 @@ export function TaskCard(props: Props) {
             <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/20 text-amber-300">未登录</span>
           )}
         </div>
-        <div className="text-xs text-slate-400 shrink-0">{task.sent_today}/{task.daily_limit}</div>
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="text-xs text-slate-400 tabular-nums">{task.sent_today}/{task.daily_limit}</div>
+          <button
+            onClick={(e) => { e.stopPropagation(); setExpanded(v => !v); }}
+            className={clsx(
+              'p-0.5 rounded text-slate-500 hover:text-slate-300 hover:bg-slate-700/50 transition-transform',
+              expanded && 'rotate-180'
+            )}
+            title={expanded ? '收起日志' : '展开日志'}
+          >
+            <ChevronDown size={14} />
+          </button>
+        </div>
       </div>
 
       {/* 子任务进度：每个子任务一行 关键词 · 城市名 · 已发/目标 */}
@@ -72,6 +149,7 @@ export function TaskCard(props: Props) {
           {task.filter.keyword} · {cityLabel(task.filter.city)}
         </div>
       ) : null}
+
       <div className="mt-2 flex gap-1.5" onClick={(e) => e.stopPropagation()}>
         {/* 未登录、空闲：登录 + 开始 并排（开始会自动处理登录流程） */}
         {idle && !task.has_login && (
@@ -158,6 +236,9 @@ export function TaskCard(props: Props) {
           <Trash2 size={12} />
         </button>
       </div>
+
+      {/* 展开的日志面板 */}
+      {expanded && <InlineLogs taskId={task.id} />}
     </div>
   );
 }

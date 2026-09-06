@@ -14,11 +14,16 @@ _env_data = os.environ.get("AUTORESUME_DATA_DIR")
 DATA_DIR = Path(_env_data) if _env_data else BASE_DIR / "data"
 PROFILES_DIR = DATA_DIR / "profiles"
 LOGS_DIR = DATA_DIR / "logs"
+WORKSPACE_DIR = DATA_DIR / "workspace"
+RESUME_STORE_DIR = DATA_DIR / "resume_store"
 DB_PATH = DATA_DIR / "auto_resume.sqlite"
+RESUME_DB_PATH = DATA_DIR / "resume_agent.db"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+RESUME_STORE_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_INTERVAL_SECONDS = 5
 DEFAULT_DAILY_LIMIT = 10

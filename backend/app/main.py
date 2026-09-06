@@ -8,13 +8,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api.tasks import router as tasks_router
+from .api.resume_agent import router as resume_agent_router
 from .services import storage
 from .services.task_manager import manager
+from .services.resume_db import init_resume_db
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     storage.init_db()
+    init_resume_db()
     await manager.init()
     yield
 
@@ -29,6 +32,7 @@ app.add_middleware(
 )
 
 app.include_router(tasks_router)
+app.include_router(resume_agent_router, prefix="/agent")
 
 
 @app.get("/health")

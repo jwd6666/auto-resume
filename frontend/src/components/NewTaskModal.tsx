@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
-import { X, Plus, Save, Trash2, Pencil } from 'lucide-react';
+import { X, Plus, Save, Trash2, Pencil, Settings, ChevronDown, Check, Cpu } from 'lucide-react';
 import { api, type AIConfig, type SubTask, type TaskCreatePayload, type TaskInfo } from '../api/client';
+import { agentApi, type SettingsInfo, type CustomModel } from '../api/agentApi';
 import { CITY_OPTIONS } from '../constants/cities';
+import clsx from 'clsx';
 
 interface Props {
   open: boolean;
@@ -54,12 +56,22 @@ const SCALE_OPTIONS = [
   { v: '306', label: '10000+ 人' },
 ];
 
-const AI_PROVIDER_OPTIONS = [
-  { v: 'deepseek', label: 'DeepSeek' },
-  { v: 'glm', label: 'GLM（智谱）' },
-  { v: 'qwen', label: 'Qwen（通义千问）' },
-  { v: 'openai', label: 'OpenAI' },
-];
+interface ProviderConfig {
+  name: string;
+  name_cn: string;
+  type: string;
+  base_url?: string;
+  env_key: string;
+  models: { id: string; name: string; multimodal?: boolean }[];
+  default_model: string;
+}
+
+interface ModelOption {
+  providerKey: string;
+  modelId: string;
+  label: string;
+  hasKey: boolean;
+}
 
 interface SubFormState {
   keyword: string;
@@ -92,11 +104,12 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
   const [clickDelay, setClickDelay] = useState(5);
   const [aiEnabled, setAiEnabled] = useState(false);
   const [aiProvider, setAiProvider] = useState('deepseek');
-  const [aiApiKey, setAiApiKey] = useState('');
-  const [aiBaseUrl, setAiBaseUrl] = useState('');
   const [aiModel, setAiModel] = useState('');
   const [aiResume, setAiResume] = useState('');
   const [aiExpectJd, setAiExpectJd] = useState('');
+  const [aiSettings, setAiSettings] = useState<SettingsInfo | null>(null);
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -109,8 +122,6 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
     setClickDelay(5);
     setAiEnabled(false);
     setAiProvider('deepseek');
-    setAiApiKey('');
-    setAiBaseUrl('');
     setAiModel('');
     setAiResume('');
     setAiExpectJd('');
@@ -128,8 +139,6 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
     const ai = t.ai_config;
     setAiEnabled(ai?.enabled ?? false);
     setAiProvider(ai?.provider || 'deepseek');
-    setAiApiKey(ai?.api_key || '');
-    setAiBaseUrl(ai?.base_url || '');
     setAiModel(ai?.model || '');
     setAiResume(ai?.resume || '');
     setAiExpectJd(ai?.expect_jd || '');
@@ -159,6 +168,43 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
     if (editing) loadFromTask(editing);
     else reset();
   }, [open, editing]);
+
+  // 加载 AI 设置和模型列表
+  useEffect(() => {
+    if (!open || !aiEnabled) return;
+    agentApi.getSettings().then(s => {
+      setAiSettings(s);
+      const providers = s.providers as Record<string, ProviderConfig>;
+      const customModels: CustomModel[] = s.custom_models || [];
+      const opts: ModelOption[] = [];
+      for (const [key, pconfig] of Object.entries(providers)) {
+        const hasKey = !!s.api_keys_set[key];
+        for (const m of pconfig.models || []) {
+          opts.push({
+            providerKey: key,
+            modelId: m.id,
+            label: `${pconfig.name_cn} · ${m.name}`,
+            hasKey,
+          });
+        }
+      }
+      for (const cm of customModels) {
+        opts.push({
+          providerKey: `custom:${cm.id}`,
+          modelId: cm.model_id,
+          label: `自定义 · ${cm.display_name || cm.model_id}`,
+          hasKey: true,
+        });
+      }
+      setModelOptions(opts.filter(o => o.hasKey));
+    }).catch(() => {});
+  }, [open, aiEnabled]);
+
+  const handleModelSelect = (opt: ModelOption) => {
+    setAiProvider(opt.providerKey);
+    setAiModel(opt.modelId);
+    setModelDropdownOpen(false);
+  };
 
   if (!open) return null;
 
@@ -191,8 +237,8 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
       ai_config: {
         enabled: aiEnabled,
         provider: aiProvider,
-        api_key: aiApiKey.trim(),
-        base_url: aiBaseUrl.trim(),
+        api_key: '',
+        base_url: '',
         model: aiModel.trim(),
         resume: aiResume.trim(),
         expect_jd: aiExpectJd.trim(),
@@ -378,45 +424,84 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
 
             {aiEnabled && (
               <>
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="AI 提供商">
-                    <Select
-                      value={aiProvider}
-                      onChange={(v) => setAiProvider(v)}
-                      options={AI_PROVIDER_OPTIONS}
-                    />
-                  </Field>
-                  <Field label="API Key *">
-                    <input
-                      type="password"
-                      value={aiApiKey}
-                      onChange={(e) => setAiApiKey(e.target.value)}
-                      placeholder="sk-..."
-                      className="input"
-                    />
-                  </Field>
+                {/* 模型选择下拉框 */}
+                <div className="space-y-2">
+                  <label className="block text-xs text-slate-400">AI 模型</label>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setModelDropdownOpen(v => !v)}
+                      className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-700 text-sm text-slate-200 hover:bg-slate-700/60 transition-colors"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Cpu size={14} className="shrink-0 text-slate-400" />
+                        <span className="truncate">
+                          {modelOptions.find(o => o.providerKey === aiProvider && o.modelId === aiModel)?.label || aiModel || '选择模型'}
+                        </span>
+                      </div>
+                      <ChevronDown size={14} className={clsx('shrink-0 text-slate-400 transition-transform', modelDropdownOpen && 'rotate-180')} />
+                    </button>
+                    {modelDropdownOpen && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setModelDropdownOpen(false)} />
+                        <div className="absolute left-0 right-0 top-full mt-1 max-h-64 overflow-y-auto scrollbar-thin bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-50">
+                          {modelOptions.length > 0 ? (
+                            <div className="p-1">
+                              {Object.entries(
+                                modelOptions.reduce((acc, opt) => {
+                                  const providerName = opt.label.split(' · ')[0];
+                                  if (!acc[providerName]) acc[providerName] = [];
+                                  acc[providerName].push(opt);
+                                  return acc;
+                                }, {} as Record<string, ModelOption[]>)
+                              ).map(([providerName, opts]) => (
+                                <div key={providerName}>
+                                  <div className="px-2 py-1 text-[10px] font-medium text-slate-500 uppercase tracking-wider">
+                                    {providerName}
+                                  </div>
+                                  {opts.map(opt => {
+                                    const isActive = aiProvider === opt.providerKey && aiModel === opt.modelId;
+                                    return (
+                                      <button
+                                        key={`${opt.providerKey}-${opt.modelId}`}
+                                        type="button"
+                                        onClick={() => handleModelSelect(opt)}
+                                        className={clsx(
+                                          'w-full text-left px-2 py-1.5 rounded text-xs flex items-center gap-1.5 transition-colors',
+                                          isActive ? 'bg-sky-500/20 text-sky-400' : 'text-slate-300 hover:bg-slate-700/50',
+                                        )}
+                                      >
+                                        {isActive && <Check size={11} className="shrink-0" />}
+                                        <span className={clsx('truncate', !isActive && 'ml-3.5')}>
+                                          {opt.label.split(' · ').slice(1).join(' · ') || opt.label}
+                                        </span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="p-3 text-xs text-slate-500 text-center">
+                              暂无可用模型，请先在模型管理中配置
+                            </div>
+                          )}
+                          <div className="p-2 border-t border-slate-700/50">
+                            <button
+                              type="button"
+                              onClick={() => { setModelDropdownOpen(false); window.dispatchEvent(new CustomEvent('navigate-model-management')); }}
+                              className="w-full flex items-center gap-1.5 px-2 py-1.5 text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-700/50 rounded transition-colors"
+                            >
+                              <Settings size={11} />
+                              前往模型管理
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="Base URL（留空自动填充）">
-                    <input
-                      value={aiBaseUrl}
-                      onChange={(e) => setAiBaseUrl(e.target.value)}
-                      placeholder="https://api.deepseek.com/v1"
-                      className="input"
-                    />
-                  </Field>
-                  <Field label="模型（留空自动填充）">
-                    <input
-                      value={aiModel}
-                      onChange={(e) => setAiModel(e.target.value)}
-                      placeholder="deepseek-chat"
-                      className="input"
-                    />
-                  </Field>
-                </div>
-                <div className="text-xs text-slate-500">
-                  启用后，将根据岗位 JD 内容由 AI 生成个性化招呼语；上方自定义招呼语作为 AI 失败时的兜底。
-                </div>
+
                 <Field label="个人简介/技能摘要（选填，让 AI 生成更有针对性的招呼语）">
                   <textarea
                     value={aiResume}
@@ -435,6 +520,9 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
                     placeholder="如：AI 全栈工程师，负责大模型应用开发、Agent/RAG 系统构建、前后端开发。岗位必须使用编程语言做软件/模型工程开发，不包含 AI 内容创作（短剧/漫画/绘画）、AI 运营推广/直播/销售等非工程岗。"
                   />
                 </Field>
+                <div className="text-xs text-slate-500">
+                  启用后，将根据岗位 JD 内容由 AI 生成个性化招呼语；上方自定义招呼语作为 AI 失败时的兜底。
+                </div>
               </>
             )}
           </div>

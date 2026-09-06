@@ -3,7 +3,7 @@
  * - 开发期：直接连 vite dev server (5173)，后端由 npm dev:py 单独启动
  * - 生产期：spawn 打包好的 auto-resume-backend.exe（含 patchright + chromium）；renderer 加载 frontend/dist
  */
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, shell, ipcMain, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -37,17 +37,44 @@ function startPythonBackend() {
     console.error('[backend] 未找到 backend exe，请先执行 npm run build:py');
     return;
   }
+  const logFile = fs.openSync(path.join(app.getPath('userData'), 'backend.log'), 'a');
   pyProcess = spawn(exePath, [], {
     cwd: path.dirname(exePath),
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', logFile, logFile],
     windowsHide: true,
     env: { ...process.env, AUTORESUME_PORT: String(BACKEND_PORT) },
   });
-  pyProcess.stdout?.on('data', (b) => process.stdout.write(`[backend] ${b}`));
-  pyProcess.stderr?.on('data', (b) => process.stderr.write(`[backend] ${b}`));
   pyProcess.on('exit', (code) => {
     console.log(`[backend] exited with ${code}`);
     pyProcess = null;
+  });
+}
+
+function waitForBackend(maxRetries = 30, interval = 1000) {
+  return new Promise((resolve) => {
+    const http = require('http');
+    let attempts = 0;
+    function check() {
+      attempts++;
+      const req = http.get(`http://127.0.0.1:${BACKEND_PORT}/health`, (res) => {
+        if (res.statusCode === 200) {
+          resolve(true);
+        } else {
+          retry();
+        }
+        res.resume();
+      });
+      req.on('error', () => retry());
+      req.setTimeout(2000, () => { req.destroy(); retry(); });
+    }
+    function retry() {
+      if (attempts >= maxRetries) {
+        resolve(false);
+      } else {
+        setTimeout(check, interval);
+      }
+    }
+    check();
   });
 }
 
@@ -84,9 +111,56 @@ function createMainWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // 禁用代理，避免 Clash 等系统代理拦截 localhost 请求导致 Failed to fetch
+  const { session, dialog } = require('electron');
+  session.defaultSession.setProxy({ proxyRules: 'direct://' });
+
   startPythonBackend();
+
+  if (!isDev) {
+    const ok = await waitForBackend();
+    if (!ok) {
+      dialog.showErrorBox(
+        '后端启动失败',
+        `无法连接到 http://127.0.0.1:${BACKEND_PORT}/health\n\n` +
+        '可能原因：\n' +
+        '1. 端口被其他程序占用\n' +
+        '2. 杀毒软件拦截了后端进程\n' +
+        '3. 后端 exe 损坏\n\n' +
+        `日志文件：${path.join(app.getPath('userData'), 'backend.log')}`
+      );
+    }
+  }
+
   createMainWindow();
+
+  // IPC: 在系统浏览器中打开本地 HTML 文件并发送 Ctrl+P 打印
+  ipcMain.handle('open-local-file-and-print', async (_event, filePath) => {
+    if (!filePath || !fs.existsSync(filePath)) return { ok: false, error: '文件不存在' };
+    const { exec } = require('child_process');
+    const platform = process.platform;
+    try {
+      if (platform === 'win32') {
+        // Windows: 用 start 命令打开默认浏览器
+        exec(`start "" "${filePath}"`);
+        // 等待浏览器加载后发送 Ctrl+P
+        setTimeout(() => {
+          exec('powershell -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(\'^p\')"');
+        }, 2000);
+      } else if (platform === 'darwin') {
+        exec(`open "${filePath}"`);
+        setTimeout(() => {
+          exec(`osascript -e 'tell application "System Events" to keystroke "p" using command down'`);
+        }, 2000);
+      } else {
+        exec(`xdg-open "${filePath}"`);
+      }
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();

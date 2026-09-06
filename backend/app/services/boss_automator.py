@@ -498,7 +498,9 @@ class BossAutomator:
             return False
 
         # AI 缓存：今日已被 AI 判断过且不匹配的岗位，直接跳过，不点击卡片浪费等待
-        if self.ai_config and self.ai_config.enabled and self.ai_config.api_key:
+        # 注意：api_key 可能为空（前端不存密钥，由后端按 provider 从「模型管理」全局配置解析），
+        # 因此门槛只检查 enabled + provider，密钥缺失会在 generate_greeting 内抛错并回退默认招呼语
+        if self.ai_config and self.ai_config.enabled and (self.ai_config.provider or "").strip():
             if storage.has_ai_judged_today(self.task_id, key):
                 await self._log("INFO", f"[AI-跳过] 今日已判断过，不重复调用：{title} @ {company}")
                 return False
@@ -554,8 +556,9 @@ class BossAutomator:
         if self._stop_event.is_set(): return False
 
         # 2.5 如果启用了 AI，抓取 JD 文本并生成招呼语
+        # 门槛只检查 enabled + provider（api_key 为空时由 generate_greeting 从「模型管理」全局配置解析）
         ai_greeting: Optional[str] = None
-        if self.ai_config and self.ai_config.enabled and self.ai_config.api_key:
+        if self.ai_config and self.ai_config.enabled and (self.ai_config.provider or "").strip():
             jd_text = await self._extract_jd_text(page)
             if jd_text:
                 try:

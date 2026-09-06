@@ -1,10 +1,8 @@
 """AI 招呼语生成服务：根据岗位 JD 信息调用大模型生成个性化打招呼内容。
 
-支持 OpenAI 兼容 API 格式的多个提供商：
-- DeepSeek
-- GLM（智谱）
-- Qwen（通义千问）
-- OpenAI
+支持两种模式：
+1. 复用模型管理的统一配置（provider 为模型管理的 key，如 deepseek/zhipu/custom:xxx）
+2. 兼容旧配置（直接指定 base_url/api_key/model，旧版 AIConfig 自带 key）
 """
 from __future__ import annotations
 
@@ -15,9 +13,8 @@ import urllib.error
 from typing import Optional, Tuple
 
 from ..schemas.task import AIConfig
+from .resume_provider import complete_response_with_provider, PROVIDERS, CUSTOM_PROVIDER_KEY
 
-# 各提供商默认配置（base_url + model）
-# base_url 是完整的 chat completions 端点，直接使用不做拼接
 _PROVIDER_DEFAULTS = {
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1/chat/completions",
@@ -37,7 +34,6 @@ _PROVIDER_DEFAULTS = {
     },
 }
 
-# 系统提示：先判断 JD 是否与求职意向匹配，匹配则根据 JD 核心要求生成有针对性的招呼语
 _SYSTEM_PROMPT = (
     "你是一位资深求职打招呼助手。你的任务是根据招聘JD和求职者的背景，判断匹配度并生成让HR觉得求职者很适合该岗位的招呼语。\n\n"
     "## 工作流程\n"
@@ -67,19 +63,18 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _resolve_config(config: AIConfig) -> tuple[str, str, str]:
-    """返回 (base_url, model, api_key)，空值用 provider 默认填充。"""
-    defaults = _PROVIDER_DEFAULTS.get(config.provider, _PROVIDER_DEFAULTS["deepseek"])
-    base_url = config.base_url.strip() or defaults["base_url"]
-    model = config.model.strip() or defaults["model"]
-    api_key = config.api_key.strip()
-    return base_url, model, api_key
+def _is_managed_provider(provider: str) -> bool:
+    if not provider:
+        return False
+    if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
+        return True
+    if provider in PROVIDERS:
+        return True
+    return False
 
 
 def _call_api(base_url: str, model: str, api_key: str, system_prompt: str, user_content: str) -> str:
-    """同步调用 OpenAI 兼容 API，返回 AI 响应文本。直接使用传入的 URL，不做拼接。"""
     url = base_url.rstrip('/')
-
     payload = json.dumps({
         "model": model,
         "messages": [
@@ -90,7 +85,6 @@ def _call_api(base_url: str, model: str, api_key: str, system_prompt: str, user_
         "temperature": 0.7,
         "stream": False,
     }).encode("utf-8")
-
     req = urllib.request.Request(
         url,
         data=payload,
@@ -100,7 +94,6 @@ def _call_api(base_url: str, model: str, api_key: str, system_prompt: str, user_
         },
         method="POST",
     )
-
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = resp.read().decode("utf-8")
@@ -113,29 +106,19 @@ def _call_api(base_url: str, model: str, api_key: str, system_prompt: str, user_
         raise RuntimeError(f"AI API 调用失败: {e}")
 
 
+def _clean_result(result: str) -> str:
+    result = result.strip()
+    for prefix in ("MATCH", "Match", "match", "匹配", "招呼语：", "招呼语:", "打招呼：", "打招呼:"):
+        if result.startswith(prefix):
+            result = result[len(prefix):].strip()
+    if len(result) >= 2 and result[0] in '"「『"' and result[-1] in '"」』"':
+        result = result[1:-1].strip()
+    return result
+
+
 async def generate_greeting(config: AIConfig, jd_text: str, keyword: str = "", resume: str = "", expect_jd: str = "") -> Tuple[bool, str]:
-    """根据 JD 文本调用 AI 判断是否匹配并生成招呼语。
-
-    参数：
-        config: AI 配置（provider/api_key 等）
-        jd_text: 岗位 JD 全文
-        keyword: 求职搜索关键词，如 "Python 后端"
-        resume: 求职者个人简介/技能摘要（可选），用于生成更有针对性的招呼语
-        expect_jd: 期望岗位描述（可选），AI 会将实际 JD 与此描述比对，判断岗位是否匹配
-
-    返回 (should_greet, greeting)：
-    - should_greet=True, greeting=AI 生成的招呼语
-    - should_greet=False, greeting="" 表示 AI 判断不匹配，应跳过
-    如果调用失败会抛出 RuntimeError。
-    """
-    base_url, model, api_key = _resolve_config(config)
-    if not api_key:
-        raise RuntimeError("AI API Key 未配置")
-
-    # JD 文本截断，避免过长
     jd_text = jd_text[:2000] if len(jd_text) > 2000 else jd_text
 
-    # 构造结构化的用户消息，让 AI 能充分理解 JD 要求和求职者背景
     sections = [f"## 求职意向\n{keyword or '未指定'}"]
     if expect_jd and expect_jd.strip():
         sections.append(f"## 期望岗位描述（匹配判断依据）\n{expect_jd.strip()[:1500]}\n\n请将下方「岗位JD信息」与此期望岗位描述严格比对，职责/技能栈不重合则输出 SKIP。")
@@ -145,21 +128,26 @@ async def generate_greeting(config: AIConfig, jd_text: str, keyword: str = "", r
     sections.append("请根据以上信息判断匹配度，匹配则生成针对该JD的招呼语，不匹配则输出 SKIP。")
     user_content = "\n\n".join(sections)
 
-    # 在线程池中执行同步 HTTP 请求
-    result = await asyncio.to_thread(_call_api, base_url, model, api_key, _SYSTEM_PROMPT, user_content)
+    if _is_managed_provider(config.provider) and not config.api_key:
+        result = await complete_response_with_provider(
+            config.provider,
+            config.model or "",
+            _SYSTEM_PROMPT,
+            [{"role": "user", "content": user_content}],
+            max_tokens=300,
+        )
+    else:
+        defaults = _PROVIDER_DEFAULTS.get(config.provider, _PROVIDER_DEFAULTS["deepseek"])
+        base_url = config.base_url.strip() or defaults["base_url"]
+        model = config.model.strip() or defaults["model"]
+        api_key = config.api_key.strip()
+        if not api_key:
+            raise RuntimeError("AI API Key 未配置")
+        result = await asyncio.to_thread(_call_api, base_url, model, api_key, _SYSTEM_PROMPT, user_content)
 
-    # 清理 AI 可能输出的多余前缀（MATCH、匹配、招呼语：等）
-    result = result.strip()
-    for prefix in ("MATCH", "Match", "match", "匹配", "招呼语：", "招呼语:", "打招呼：", "打招呼:"):
-        if result.startswith(prefix):
-            result = result[len(prefix):].strip()
+    result = _clean_result(result)
 
-    # AI 返回 SKIP 表示不匹配，应跳过
     if result.upper() == "SKIP" or result.upper().startswith("SKIP"):
         return False, ""
-
-    # 去掉首尾引号
-    if len(result) >= 2 and result[0] in '"「『"' and result[-1] in '"」』"':
-        result = result[1:-1].strip()
 
     return True, result
