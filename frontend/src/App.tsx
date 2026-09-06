@@ -14,6 +14,7 @@ import { ModelManagement } from './components/ModelManagement';
 import { ResumeAgentPage } from './components/resume/ResumeAgentPage';
 import { AICopyPage } from './components/AICopyPage';
 import { JobAnalysisPage } from './components/JobAnalysisPage';
+import { JobManagePage } from './components/JobManagePage';
 import { api, type TaskInfo } from './api/client';
 import { useTasks } from './store/useTasks';
 
@@ -158,6 +159,7 @@ export default function App() {
       case 'templates': return renderPlaceholder('话术模板', '管理招呼话术模板');
       case 'accounts': return <ModelManagement />;
       case 'ai-copy': return null;
+      case 'job-manage': return <JobManagePage />;
       case 'job-analysis': return null;
       case 'system-settings': return renderPlaceholder('系统设置', '配置账号与偏好');
       default: return renderHome();

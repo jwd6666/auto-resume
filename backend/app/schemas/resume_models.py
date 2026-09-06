@@ -11,15 +11,7 @@ class Job(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(500), nullable=False)
-    company = Column(String(255), nullable=True)
-    job_url = Column(String(500), nullable=True)
-    salary = Column(String(128), nullable=True)
-    competency_profile = Column(String(80), nullable=True, default="default")
     content = Column(Text, nullable=False)
-    status = Column(String(32), nullable=True, default="pending")
-    enabled = Column(Boolean, nullable=True, default=True)
-    location = Column(String(128), nullable=True)
-    job_type = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

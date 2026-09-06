@@ -3,6 +3,7 @@ import {
   Home, ListTodo, Users,
   Sparkles, Wand2, BarChart3, Plus, Settings,
   PanelLeftClose, PanelLeftOpen,
+  Briefcase,
 } from 'lucide-react';
 
 interface MenuItem {
@@ -29,6 +30,7 @@ const groups: MenuGroup[] = [
     title: '自动招呼',
     items: [
       { icon: <ListTodo size={17} />, label: '任务管理', id: 'tasks' },
+      { icon: <Briefcase size={17} />, label: '岗位管理', id: 'job-manage' },
       { icon: <Users size={17} />, label: '模型管理', id: 'accounts' },
     ],
   },

@@ -510,18 +510,20 @@ class BossAutomator:
             await self._log("INFO", f"[跳过-黑名单] {title} @ {company}")
             return False
 
-        ok = await self._open_detail_and_greet(card)
+        ok, jd_text_saved = await self._open_detail_and_greet(card)
         if ok:
             storage.mark_greeted(
                 self.task_id, key, title, company,
                 datetime.now().isoformat(timespec="seconds"),
                 sub_index=self._sub_index,
+                jd_text=jd_text_saved or "",
             )
             await self._log("SUCCESS", f"[已招呼] {title} @ {company}")
         return ok
 
-    async def _open_detail_and_greet(self, card: dict) -> bool:
-        """点左侧岗位卡片 → 等 N 秒 → 右侧详情页点「立即沟通」→ 弹窗发送 → 关闭弹窗。"""
+    async def _open_detail_and_greet(self, card: dict) -> tuple[bool, str]:
+        """点左侧岗位卡片 → 等 N 秒 → 右侧详情页点「立即沟通」→ 弹窗发送 → 关闭弹窗。
+        返回 (是否成功, 抓取到的JD文本)。"""
         page = self._page
         assert page
         title = card.get("title", "")
@@ -546,32 +548,34 @@ class BossAutomator:
             )
             if not clicked:
                 await self._log("WARN", f"未在 DOM 中找到岗位链接：{href}")
-                return False
+                return False, ""
         except Exception as e:
             await self._log("WARN", f"点击卡片失败：{e}")
-            return False
+            return False, ""
 
         # 2. 等右侧详情加载（默认 5 秒，模拟真人浏览，可配置）
         await asyncio.sleep(self.click_delay_seconds)
-        if self._stop_event.is_set(): return False
+        if self._stop_event.is_set(): return False, ""
 
-        # 2.5 如果启用了 AI，抓取 JD 文本并生成招呼语
-        # 门槛只检查 enabled + provider（api_key 为空时由 generate_greeting 从「模型管理」全局配置解析）
+        # 2.5 抓取 JD 文本（始终尝试，用于招呼记录保存）
+        jd_text = await self._extract_jd_text(page)
+        if jd_text:
+            await self._log("INFO", f"[JD抓取结果] {jd_text}")
+
+        # 2.6 如果启用了 AI，根据 JD 生成招呼语
         ai_greeting: Optional[str] = None
         if self.ai_config and self.ai_config.enabled and (self.ai_config.provider or "").strip():
-            jd_text = await self._extract_jd_text(page)
             if jd_text:
                 try:
                     keyword = self.filter.keyword or ""
                     await self._log("INFO", f"[AI] 正在根据 JD 判断匹配并生成招呼语...")
                     should_greet, greeting = await generate_greeting(self.ai_config, jd_text, keyword, self.ai_config.resume, self.ai_config.expect_jd)
-                    # 无论匹配与否，都记录 AI 判断结果，避免同岗位今日重复调用
                     job_key = _job_key(card.get("href", ""))
                     if job_key:
                         storage.mark_ai_judged(self.task_id, job_key, should_greet)
                     if not should_greet:
                         await self._log("INFO", f"[AI-跳过] JD 与求职意向不匹配：{title}")
-                        return False
+                        return False, jd_text
                     ai_greeting = greeting
                     await self._log("INFO", f"[AI] 生成招呼语：{ai_greeting[:50]}...")
                 except Exception as e:
@@ -604,7 +608,7 @@ class BossAutomator:
         if not click_result or not click_result.get("clicked"):
             seen = click_result.get("allTexts") if click_result else []
             await self._log("INFO", f"[跳过] 详情无可点的「立即沟通」(候选文本={seen})：{title}")
-            return False
+            return False, jd_text
 
         await page.wait_for_timeout(1500)
 
@@ -649,7 +653,7 @@ class BossAutomator:
         # 8. 等 N 秒（默认 5），再交回主循环（不滚动到顶部，保持当前位置继续向下遍历）
         if sent_ok:
             await asyncio.sleep(self.click_delay_seconds)
-        return sent_ok
+        return sent_ok, jd_text
 
     async def _send_in_dialog(self, page: Page, ai_greeting: Optional[str] = None) -> tuple[bool, bool]:
         """点完「立即沟通」后处理弹窗。返回 (弹窗已处理, 招呼语已发送)。
@@ -895,29 +899,44 @@ class BossAutomator:
         return False
 
     async def _extract_jd_text(self, page: Page) -> str:
-        """从右侧岗位详情区域抓取 JD 文本。"""
+        """从右侧岗位详情区域抓取 JD 文本，清理反爬干扰元素。"""
         try:
             text = await page.evaluate(
                 """() => {
-                  // BOSS 详情页容器候选
                   const containers = [
                     '.job-detail-content', '.job-sec-text', '.job-detail',
                     '.recommend-result-job .job-detail', '.job-detail-box'
                   ];
+                  let el = null;
                   for (const sel of containers) {
-                    const el = document.querySelector(sel);
-                    if (el) return (el.innerText || el.textContent || '').slice(0, 2000);
+                    el = document.querySelector(sel);
+                    if (el) break;
                   }
-                  // 兜底：取详情区域里所有文本
-                  const detail = document.querySelector('.job-detail-container, .recommend-result-job');
-                  if (detail) return (detail.innerText || '').slice(0, 2000);
-                  return '';
+                  if (!el) {
+                    el = document.querySelector('.job-detail-container, .recommend-result-job');
+                  }
+                  if (!el) return '';
+                  const clone = el.cloneNode(true);
+                  clone.querySelectorAll('style').forEach(s => s.remove());
+                  clone.querySelectorAll('[style*="display:none"],[style*="display: none"],[style*="visibility:hidden"],[style*="visibility: hidden"]').forEach(s => s.remove());
+                  clone.querySelectorAll('[class]').forEach(s => {
+                    const cls = s.className;
+                    if (/(\\b(display-none|hidden|invisible)\\b)/i.test(cls)) s.remove();
+                  });
+                  const boseNoise = clone.querySelectorAll('span');
+                  boseNoise.forEach(s => {
+                    const t = (s.innerText || '').trim();
+                    if (/^(boss|BOSS直聘|来自BOSS直聘)$/i.test(t)) s.remove();
+                  });
+                  clone.querySelectorAll('.job-address, .job-boss-info, .job-search-scan, .more-job-btn, .job-detail-operate, .op-btn-like, .op-btn-chat').forEach(s => s.remove());
+                  return (clone.innerText || clone.textContent || '').slice(0, 3000);
                 }"""
             )
-            # 清理 PUA 乱码字符
             import re
             text = re.sub(r'[\uE000-\uF8FF]', '', text or '')
             text = re.sub(r'\s+', ' ', text).strip()
+            if text:
+                await self._log("INFO", f"[JD抓取结果] {text}")
             return text
         except Exception:
             return ""

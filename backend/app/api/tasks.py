@@ -1,7 +1,10 @@
 """任务 REST 路由。"""
 from __future__ import annotations
 
+from typing import List
+
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
 from ..core.logger import get_logger
 from ..schemas.task import TaskCreate
@@ -20,6 +23,21 @@ async def list_tasks() -> dict:
 async def create_task(payload: TaskCreate) -> dict:
     info = await manager.create(payload)
     return info.model_dump()
+
+
+@router.get("/greeted-recent")
+async def greeted_recent(days: int = 3) -> dict:
+    return {"items": storage.list_greeted_recent(days)}
+
+
+class BatchDeleteGreetedRequest(BaseModel):
+    ids: List[int]
+
+
+@router.post("/greeted-batch-delete")
+async def batch_delete_greeted(req: BatchDeleteGreetedRequest) -> dict:
+    deleted = storage.batch_delete_greeted(req.ids)
+    return {"ok": True, "deleted": deleted}
 
 
 @router.put("/{task_id}")
@@ -102,10 +120,9 @@ async def task_ws(ws: WebSocket, task_id: str) -> None:
         await ws.close(); return
     manager.subscribe(task_id, ws)
     try:
-        # 推送初始快照
         await ws.send_json({"type": "snapshot", "task_id": task_id, "info": manager.get(task_id).to_dict(), "logs": get_logger(task_id).tail(200)})
         while True:
-            await ws.receive_text()  # 心跳/keep-alive，前端可发空消息
+            await ws.receive_text()
     except WebSocketDisconnect:
         pass
     finally:

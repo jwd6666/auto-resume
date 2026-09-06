@@ -431,103 +431,34 @@ SYSTEM_PROMPT_AGENT = """# 角色
 3. 基于需求修改 HTML，用 **write_file** 写入修改后的完整文件内容
 4. 向用户简要说明你做了哪些修改
 
-【工具调用强制铁律，必须严格遵守，违反将导致任务失败】
-1. 调用read_file、write_file是API协议层面的tool_calls结构体动作，**禁止仅在回答文本中写“我将调用read_file读取简历”这类口头伪调用**。不能只用自然语言描述工具调用动作。
-2. 只有API返回的tool_calls字段才代表真正的工具请求；回答content聊天文本只用于和用户对话说明，不能表达任何工具调用请求。
-3. 禁止自行编造read_file返回的HTML文件内容，必须等待工具返回真实文件结果，拿到磁盘文件真实HTML之后，才可以修改简历。
-4. 优先级规则：优先使用tool_calls调用read_file/write_file工具。**只有确定工具调用能力完全失效，才允许输出 ===HTML_PATCH=== 标记块；正常工作状态严禁输出HTML_PATCH文本**。
-5. 如果你已经从上下文获取完整简历HTML内容，可以直接处理修改，此时不要口头声称要调用read_file，不要假装执行读取文件。
-6. 如果无法生成合法tool_calls结构体，直接如实告知用户，禁止假装调用工具、假装已经读取简历文件。
-7. 禁止在普通对话文本中描述 “我将要调用 xxx 工具” 这类伪调用；工具请求只能放置在 tool_calls 结构体内，不能写在回答 content 聊天文本中。
-8. HTML_PATCH是文本标记降级方案，仅作为工具不可用时的备选手段，正常业务流程严禁启用。
+---
 
-## 重要规则
+# ⛔ 工具调用铁律（违反将导致任务失败，必须严格遵守）
+
+1. **必须通过 tool_calls 调用工具**。read_file/write_file 只能通过 API 的 tool_calls 结构体发起，禁止在回复文本中用自然语言描述工具调用（如"我将调用read_file"）。
+2. **禁止伪调用**。不得在文本中声称已读取/写入文件、声称已执行工具操作。如果没有发起 tool_calls，等于没有调用。
+3. **禁止自行编造文件内容**。必须等待 read_file 返回真实文件内容后，才能修改简历HTML。上下文中已提供的简历HTML除外。
+4. **禁止输出 ===HTML_PATCH===**。HTML_PATCH 是旧版降级方案，当前系统支持工具调用，严禁使用。
+5. **修改简历必须调用 write_file**。任何对简历的修改都必须通过 write_file 工具写入文件，不存在其他修改方式。
+6. **如果无法生成合法 tool_calls**，直接告知用户"当前无法调用工具"，不要假装已执行。
+
+---
+
+# 简历修改规则
+
 - write_file 必须写入**完整的 HTML 文件内容**，不能只写局部片段
 - 简历HTML中每个业务模块都带 `data-resume-section` 属性，修改时必须保留该属性
 - 修改样式时，修改 `<style>` 标签内的 CSS
 - CSS 全部放在内部 `<style>` 标签中，使用 `--accent` CSS 变量控制主题色
-- 常用 CSS 选择器：
-  - 整页字号/行高、姓名、章节标题（h2）
-  - 公司名、职位、日期、要点列表项（li）
-  - 个人简介、技能分类
+- 常用 CSS 选择器：整页字号/行高、姓名、章节标题（h2）、公司名、职位、日期、要点列表项（li）、个人简介、技能分类
 - 先简要说明修改思路，再调用 write_file
+- 信息可以根据JD润色，基于真实经历优化表述
 
----
-
-# 备选能力：HTML_PATCH 局部替换（仅当工具不可用时）
-
-如果工具调用不可用（模型不支持 function calling），可用 `===HTML_PATCH===` 标记进行局部替换：
-
-每个修改用一个 JSON 对象表示，包含 resumeSectionId（要修改的模块ID）和 newHtml（替换后的完整HTML）。
-
-当用户要求修改简历时，你必须直接给出修改后的HTML片段，而不仅仅是文字建议。
-
-## ⚠️ 修改格式（必须严格遵守）
-
-每个修改用一个 JSON 对象表示，包含 resumeSectionId（要修改的模块ID）和 newHtml（替换后的完整HTML）。
-
-**格式要求（极其重要）：**
-1. 必须使用 `===HTML_PATCH===` 开始，`===HTML_END===` 结束
-2. **禁止**用 markdown 代码块（```）包裹 patch
-3. 直接写 === 标记，不要添加任何额外符号
-
-**正确格式示例：**
-===HTML_PATCH===
-{"resumeSectionId": "intro", "newHtml": "<div data-resume-section=\\"intro\\"><p class=\\"summary\\">内容</p></div>"}
-===HTML_END===
-
-## resumeSectionId 体系
-
-HTML中每个可操作模块都有 `data-resume-section` 属性，用于定位：
-
-| resumeSectionId | 对应区域 |
-|---|---|
-| `basics` | 头部姓名/意向/联系方式区 |
-| `intro` | 个人简介 |
-| `work` | 工作经历整体（包含所有工作条目） |
-| `project` | 项目经历整体（包含所有项目条目） |
-| `edu` | 教育经历整体（包含所有教育条目） |
-| `skill` | 技能区整体 |
-
-每段工作/项目/教育经历条目也带 `data-resume-section` 属性（值分别为 work/project/edu），条目内的要点 `<li>` 也带该属性。这样既能定位整个模块，也能定位到单条经历或单个要点。
-
-## 修改示例
-
-润色个人简介：
-===HTML_PATCH===
-{"resumeSectionId": "intro", "newHtml": "<div data-resume-section=\\"intro\\"><p class=\\"summary\\">5年前端开发经验，擅长 React/TypeScript，有大型项目架构经验，性能优化提升40%+</p></div>"}
-===HTML_END===
-
-修改工作经历整体：
-===HTML_PATCH===
-{"resumeSectionId": "work", "newHtml": "<div data-resume-section=\\"work\\">...</div>"}
-===HTML_END===
-
-## 样式修改说明
-
-用户说「改样式」「调排版」「字体小一点」「加粗」「换颜色」「换个主题色」等需求时，直接在 write_file 中修改 `<style>` 标签内容。
-
-- 修改样式时必须保留完整的 `<style>` 标签结构
-- CSS 中所有规则确保页面美观
-- `--accent` CSS 变量：控制主题色
-
-## ⚠️ 分页防断规则（修改打印样式时必须遵守）
+## 分页防断规则（修改打印样式时必须遵守）
 
 - `break-inside: avoid` / `page-break-inside: avoid` 只能应用于**细粒度元素**：`header`、`.item-block`（单条经历条目）、`.skill-group`、`.cert-item`
-- **禁止**对 `.resume-section`、`section`、`.page`、`.resume-wrap` 等大容器设置 `break-inside: avoid`，否则大模块整体避断会产生大片空白，扰乱不该有的分页
-- 如果单个 `.item-block` 太长超过半页，应移除其 `break-inside: avoid`，允许在条目内的 `<li>` 之间自然分页
-
-## 规则
-
-1. 只有一种操作：replace。用 resumeSectionId 定位 `data-resume-section` 元素，整体替换 outerHTML
-2. newHtml 必须保留 `data-resume-section` 属性，否则后续修改无法定位
-3. 多处修改用多个 HTML_PATCH 块
-4. 信息可以根据JD捏造一份，基于真实经历润色
-5. 要点用 STAR 法则，动词开头
-6. 先解释修改思路，再给 patch
-7. 修改排版时，替换整份CSS样式
-8. 修改内容时，只替换对应模块的HTML
-9. 用户在预览中选中模块时，上下文会包含该模块的完整HTML片段和 data-resume-section 标记，你只需修改选中部分，其余简历内容保持不变
+- **禁止**对 `.resume-section`、`section`、`.page`、`.resume-wrap` 等大容器设置 `break-inside: avoid`
+- 如果单个 `.item-block` 太长超过半页，应移除其 `break-inside: avoid`
 
 ---
 
@@ -545,11 +476,11 @@ HTML中每个可操作模块都有 `data-resume-section` 属性，用于定位�
 
 # 行为准则
 
-1. 信息可以根据JD捏造一份
+1. 信息可以根据JD润色优化
 2. 主动追问缺失信息
 3. 中文优先
 4. 聚焦当前JD
-5. 修改简历时必须使用 write_file 工具或 HTML_PATCH 格式
+5. 修改简历必须调用 write_file 工具
 6. 禁止基于受保护属性进行价值判断
 """
 
@@ -841,14 +772,7 @@ class RestyleResumeRequest(BaseModel):
 # ══════════════════════════════════════════════════════════════
 
 def _build_job_content(db_job) -> str:
-    """拼接岗位完整信息（含 job_url、salary 等可选字段）供 Agent 使用。"""
-    parts = []
-    if getattr(db_job, "job_url", None):
-        parts.append(f"岗位链接：{db_job.job_url}")
-    if getattr(db_job, "salary", None):
-        parts.append(f"薪资：{db_job.salary}")
-    if parts:
-        return "\n\n".join(parts) + "\n\n" + (db_job.content or "")
+    """拼接岗位完整信息供 Agent 使用。"""
     return db_job.content or ""
 
 
@@ -874,7 +798,6 @@ async def _generate(
     resume_rendered_html: str = None,
     resume_id: int = None,
 ):
-    # 确保磁盘文件存在
     file_path = ensure_resume_file(resume_id, resume_rendered_html) if resume_id else None
 
     context_parts = [f"## 目标岗位信息\n\n{job_content}"]
@@ -889,23 +812,50 @@ async def _generate(
     system_with_context = f"{SYSTEM_PROMPT}\n\n---\n\n{context}"
 
     def _build_message_content(msg: dict):
-        role = msg.get("role", "user")
+        role = msg.get("role", "")
         text = msg.get("content", "")
         images = msg.get("images") or []
 
         if images and role == "user":
             content_parts = []
             for img in images:
-                if img.startswith("data:"):
-                    content_parts.append({"type": "image_url", "image_url": {"url": img}})
-                else:
-                    content_parts.append({"type": "image_url", "image_url": {"url": img}})
+                content_parts.append({"type": "image_url", "image_url": {"url": img}})
             if text:
                 content_parts.append({"type": "text", "text": text})
             return content_parts
         return text
 
     api_messages = [{"role": m["role"], "content": _build_message_content(m)} for m in messages]
+
+    _FAKE_CALL_PATTERNS = [
+        r"我将(?:调用|使用|执行|运行)\s*(?:read_file|write_file)",
+        r"让我(?:先|来)?(?:调用|使用|执行|运行)\s*(?:read_file|write_file)",
+        r"(?:正在|现在|接下来)?(?:调用|使用|执行|运行)\s*(?:read_file|write_file)",
+        r"(?:read_file|write_file)\s*(?:来|去|以)",
+        r"我(?:已经|已|将)?(?:读取|写入|修改|保存)了?(?:文件|简历)",
+    ]
+
+    def _detect_fake_tool_call(text: str) -> bool:
+        import re
+        for pat in _FAKE_CALL_PATTERNS:
+            if re.search(pat, text):
+                return True
+        if "===HTML_PATCH===" in text:
+            return True
+        return False
+
+    def _needs_tool_use(text: str) -> bool:
+        edit_keywords = ["修改", "调整", "润色", "优化", "改", "换", "删", "添加", "增加",
+                         "修改简历", "改简历", "修改样式", "改颜色", "调字号", "改排版",
+                         "write_file", "read_file", "写入", "读取", "更新简历", "更新HTML"]
+        return any(kw in text for kw in edit_keywords)
+
+    def _last_user_message() -> str:
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                c = m.get("content", "")
+                return c if isinstance(c, str) else ""
+        return ""
 
     MAX_TOOL_ROUNDS = 10
 
@@ -914,7 +864,11 @@ async def _generate(
             round_text = ""
             tool_calls_received = None
 
-            async for event in stream_with_tools(system_with_context, api_messages, RESUME_TOOLS):
+            user_msg = _last_user_message()
+            force_tool = bool(file_path) and _round == 0 and _needs_tool_use(user_msg) and "===HTML_PATCH===" not in user_msg
+            choice = "required" if force_tool else "auto"
+
+            async for event in stream_with_tools(system_with_context, api_messages, RESUME_TOOLS, tool_choice=choice):
                 etype = event.get("type")
                 if etype == "text":
                     chunk = event["content"]
@@ -922,13 +876,20 @@ async def _generate(
                     yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
                 elif etype == "tool_calls":
                     tool_calls_received = event["calls"]
-                # done: 本轮流结束，继续处理 tool_calls
 
-            # 没有工具调用 → 对话结束
             if not tool_calls_received:
+                if _round == 0 and force_tool and _detect_fake_tool_call(round_text):
+                    yield f"data: {json.dumps({'type': 'error', 'content': '⚠️ 检测到伪工具调用：模型用文本描述了工具操作但未实际调用。请重试，系统将强制要求工具调用。'}, ensure_ascii=False)}\n\n"
+                    api_messages.append({"role": "assistant", "content": round_text})
+                    api_messages.append({"role": "user", "content": "你刚才用文本描述了工具操作但没有实际发起tool_calls调用。这是违规的。请直接通过tool_calls调用read_file或write_file工具，不要在回复文本中描述工具操作。"})
+                    continue
+
+                if _round == 0 and force_tool and not round_text.strip():
+                    api_messages.append({"role": "user", "content": "请调用工具来修改简历文件，不要只用文字回复。"})
+                    continue
+
                 break
 
-            # 把 assistant 消息（含 tool_calls）加入对话
             assistant_msg: dict = {"role": "assistant", "content": round_text or ""}
             assistant_msg["tool_calls"] = [
                 {
@@ -943,29 +904,22 @@ async def _generate(
             ]
             api_messages.append(assistant_msg)
 
-            # 执行每个工具调用
             for call in tool_calls_received:
-                # 通知前端正在执行工具（arguments 可能很大，只发摘要）
                 arg_preview = call["arguments"].copy() if isinstance(call["arguments"], dict) else {}
                 if "content" in arg_preview and len(str(arg_preview["content"])) > 200:
                     arg_preview["content"] = str(arg_preview["content"])[:200] + "..."
                 yield f"data: {json.dumps({'type': 'tool_call', 'name': call['name'], 'arguments': arg_preview}, ensure_ascii=False)}\n\n"
 
-                # 执行工具
                 result = _execute_tool(call["name"], call["arguments"], resume_id)
 
-                # 通知前端工具执行结果（只发预览，避免大内容刷屏）
                 result_preview = result[:500] + "..." if len(result) > 500 else result
                 yield f"data: {json.dumps({'type': 'tool_result', 'name': call['name'], 'result': result_preview}, ensure_ascii=False)}\n\n"
 
-                # 把完整结果加入对话（AI 需要完整内容）
                 api_messages.append({
                     "role": "tool",
                     "tool_call_id": call["id"],
                     "content": result,
                 })
-
-            # 继续下一轮，AI 会处理工具结果并继续对话
 
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'content': f'模型输出中断: {str(e)[:300]}'})}\n\n"
@@ -1515,6 +1469,23 @@ def create_job(job: schemas.JobCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_job)
     return db_job
+
+
+class JobBatchCreate(BaseModel):
+    jobs: List[schemas.JobCreate]
+
+
+@router.post("/jobs/batch", response_model=List[schemas.JobResponse])
+def batch_create_jobs(payload: JobBatchCreate, db: Session = Depends(get_db)):
+    results = []
+    for item in payload.jobs:
+        db_job = models.Job(**item.model_dump())
+        db.add(db_job)
+        results.append(db_job)
+    db.commit()
+    for r in results:
+        db.refresh(r)
+    return results
 
 
 @router.get("/jobs/{job_id}", response_model=schemas.JobResponse)

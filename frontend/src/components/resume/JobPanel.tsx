@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { Briefcase, Plus, Upload, ListChecks, X, Check, Loader2 } from 'lucide-react';
 import { agentApi, type Job } from '../../api/agentApi';
-import { Switch, DotMenu, Modal, formatDateTime, extractSkillTags } from './ui';
+import { DotMenu, Modal, formatDateTime, extractSkillTags } from './ui';
 
 interface Props {
   open: boolean;
@@ -11,7 +11,7 @@ interface Props {
   onSelect: (job: Job | null) => void;
 }
 
-const EMPTY_FORM = { title: '', company: '', location: '', job_type: '', content: '' };
+const EMPTY_FORM = { title: '', content: '' };
 
 export function JobPanel({ open, onClose, selectedJob, onSelect }: Props) {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -40,8 +40,7 @@ export function JobPanel({ open, onClose, selectedJob, onSelect }: Props) {
     if (!form.title.trim() || !form.content.trim()) return;
     try {
       const payload = {
-        title: form.title, company: form.company || undefined,
-        location: form.location || undefined, job_type: form.job_type || undefined,
+        title: form.title,
         content: form.content,
       };
       if (editing) {
@@ -76,11 +75,6 @@ export function JobPanel({ open, onClose, selectedJob, onSelect }: Props) {
       setShowImport(false); setImportText('');
     } catch (e: any) { alert(`批量导入失败：${e.message}`); }
     finally { setImporting(false); }
-  };
-
-  const handleToggle = async (job: Job, v: boolean) => {
-    const updated = await agentApi.updateJob(job.id, { enabled: v });
-    setJobs(jobs.map(j => j.id === job.id ? updated : j));
   };
 
   const handleDelete = async (job: Job) => {
@@ -154,18 +148,8 @@ export function JobPanel({ open, onClose, selectedJob, onSelect }: Props) {
 
         {showForm && (
           <div className="bg-surface-900/60 border border-slate-700/40 rounded-lg mb-3 p-3 space-y-2 animate-fade-in">
-            <div className="flex gap-2">
-              <input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="岗位名称 *"
-                className="flex-1 min-w-0 bg-surface-900/60 border border-slate-700/50 rounded-md px-2.5 py-1.5 text-sm text-slate-200 placeholder-slate-600 focus:border-accent-blue/50 focus:outline-none" />
-              <input value={form.company} onChange={e => setForm({ ...form, company: e.target.value })} placeholder="公司（选填）"
-                className="w-28 bg-surface-900/60 border border-slate-700/50 rounded-md px-2.5 py-1.5 text-sm text-slate-200 placeholder-slate-600 focus:border-accent-blue/50 focus:outline-none" />
-            </div>
-            <div className="flex gap-2">
-              <input value={form.job_type} onChange={e => setForm({ ...form, job_type: e.target.value })} placeholder="类型，如 全职（选填）"
-                className="flex-1 bg-surface-900/60 border border-slate-700/50 rounded-md px-2.5 py-1.5 text-sm text-slate-200 placeholder-slate-600 focus:border-accent-blue/50 focus:outline-none" />
-              <input value={form.location} onChange={e => setForm({ ...form, location: e.target.value })} placeholder="城市，如 深圳（选填）"
-                className="flex-1 bg-surface-900/60 border border-slate-700/50 rounded-md px-2.5 py-1.5 text-sm text-slate-200 placeholder-slate-600 focus:border-accent-blue/50 focus:outline-none" />
-            </div>
+            <input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="岗位名称 *"
+              className="w-full min-w-0 bg-surface-900/60 border border-slate-700/50 rounded-md px-2.5 py-1.5 text-sm text-slate-200 placeholder-slate-600 focus:border-accent-blue/50 focus:outline-none" />
             <textarea value={form.content} onChange={e => setForm({ ...form, content: e.target.value })} placeholder="粘贴岗位 JD 内容... *" rows={4}
               className="w-full bg-surface-900/60 border border-slate-700/50 rounded-md px-2.5 py-1.5 text-sm text-slate-200 placeholder-slate-600 focus:border-accent-blue/50 focus:outline-none resize-none" />
             <div className="flex gap-2 justify-end">
@@ -210,7 +194,7 @@ export function JobPanel({ open, onClose, selectedJob, onSelect }: Props) {
                     selectedJob?.id === job.id
                       ? 'bg-accent-blue/10 border-accent-blue/40'
                       : 'bg-surface-800/40 border-slate-700/30 hover:bg-surface-700/40'
-                  } ${job.enabled === false ? 'opacity-55' : ''}`}
+                  }`}
                 >
                   <div className="flex items-center gap-2">
                     {batchMode && (
@@ -220,16 +204,12 @@ export function JobPanel({ open, onClose, selectedJob, onSelect }: Props) {
                     <p className={`flex-1 min-w-0 text-sm font-medium truncate ${selectedJob?.id === job.id ? 'text-accent-blue' : 'text-slate-200'}`}>
                       {job.title}
                     </p>
-                    <Switch checked={job.enabled !== false} onChange={v => handleToggle(job, v)} />
                     <DotMenu items={[
-                      { label: '编辑', onClick: () => { setEditing(job); setForm({ title: job.title, company: job.company || '', location: job.location || '', job_type: job.job_type || '', content: job.content }); setShowForm(true); } },
+                      { label: '编辑', onClick: () => { setEditing(job);         setForm({ title: job.title, content: job.content }); setShowForm(true); } },
                       { label: '删除', danger: true, onClick: () => handleDelete(job) },
                     ]} />
                   </div>
                   <div className="flex flex-wrap items-center gap-1 mt-1.5">
-                    {job.job_type && <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-purple/15 text-accent-purple">{job.job_type}</span>}
-                    {job.location && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">{job.location}</span>}
-                    {job.salary && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400">{job.salary}</span>}
                     {skills.map(s => (
                       <span key={s} className="text-[10px] px-1.5 py-0.5 rounded bg-surface-700/70 text-slate-400">{s}</span>
                     ))}

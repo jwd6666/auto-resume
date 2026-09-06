@@ -133,8 +133,8 @@ def _settings_file_path() -> str:
 SETTINGS_FILE = _settings_file_path()
 
 _DEFAULT_SETTINGS = {
-    "provider": "anthropic",
-    "model": "claude-opus-4-6",
+    "provider": "",
+    "model": "",
     "api_keys": {k: "" for k in PROVIDERS},
     # 自定义模型配置（单模型，向后兼容）
     "custom": {
@@ -765,6 +765,7 @@ async def stream_with_tools(
     tools: list,
     max_tokens: int = 8192,
     timeout: float = 1800.0,
+    tool_choice: str = "auto",
 ) -> AsyncGenerator[dict, None]:
     """带工具调用的流式对话（OpenAI 兼容格式）。
 
@@ -842,7 +843,7 @@ async def stream_with_tools(
             stream=True,
             max_tokens=max_tokens,
             tools=tools,
-            tool_choice="auto",
+            tool_choice=tool_choice,
         )
     except Exception as e:
         # 工具调用不被模型支持时，退回纯文本流

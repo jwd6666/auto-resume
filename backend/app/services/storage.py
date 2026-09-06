@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Iterable, List, Optional
@@ -77,6 +77,7 @@ def init_db() -> None:
             "ALTER TABLE tasks ADD COLUMN sub_tasks_json TEXT",
             "ALTER TABLE greeted_jobs ADD COLUMN sub_index INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE tasks ADD COLUMN ai_config_json TEXT",
+            "ALTER TABLE greeted_jobs ADD COLUMN jd_text TEXT",
         ]:
             try: c.execute(stmt)
             except sqlite3.OperationalError: pass
@@ -199,16 +200,16 @@ def has_greeted_today(task_id: str, job_key: str) -> bool:
     return row is not None
 
 
-def mark_greeted(task_id: str, job_key: str, title: str, company: str, ts_iso: str, sub_index: int = 0) -> None:
+def mark_greeted(task_id: str, job_key: str, title: str, company: str, ts_iso: str, sub_index: int = 0, jd_text: str = "") -> None:
     """写入已招呼记录前清理薪资乱码，避免历史脏数据污染。"""
     today = date.today().isoformat()
     with transaction() as c:
         c.execute(
             """
-            INSERT OR IGNORE INTO greeted_jobs(task_id, job_key, day, greeted_at, title, company, sub_index)
-            VALUES(?, ?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO greeted_jobs(task_id, job_key, day, greeted_at, title, company, sub_index, jd_text)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, job_key, today, ts_iso, _clean_title(title), _clean_title(company), sub_index),
+            (task_id, job_key, today, ts_iso, _clean_title(title), _clean_title(company), sub_index, jd_text or ""),
         )
 
 
@@ -306,3 +307,36 @@ def mark_ai_judged(task_id: str, job_key: str, matched: bool) -> None:
             """,
             (task_id, job_key, today, ts, 1 if matched else 0),
         )
+
+
+def list_greeted_recent(days: int = 3) -> List[dict]:
+    """列出近 N 天所有任务的招呼记录（含 jd_text），按时间倒序。"""
+    from datetime import datetime
+    start = (date.today() - timedelta(days=days - 1)).isoformat()
+    with transaction() as c:
+        rows = c.execute(
+            "SELECT rowid, task_id, job_key, day, greeted_at, title, company, jd_text FROM greeted_jobs WHERE day >= ? ORDER BY greeted_at DESC",
+            (start,),
+        ).fetchall()
+    items: List[dict] = []
+    for r in rows:
+        d = dict(r)
+        d["id"] = r["rowid"]
+        d["title"] = _clean_title(d.get("title"))
+        d["company"] = _clean_title(d.get("company"))
+        d["jd_text"] = d.get("jd_text") or ""
+        items.append(d)
+    return items
+
+
+def batch_delete_greeted(rowids: List[int]) -> int:
+    """按 rowid 批量删除招呼记录，返回删除条数。"""
+    if not rowids:
+        return 0
+    with transaction() as c:
+        placeholders = ",".join("?" * len(rowids))
+        cur = c.execute(
+            f"DELETE FROM greeted_jobs WHERE rowid IN ({placeholders})",
+            rowids,
+        )
+    return cur.rowcount if cur else 0

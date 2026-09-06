@@ -9,15 +9,7 @@ JOB_STATUS = ["pending", "screening", "screening_fail", "interviewing", "intervi
 
 class JobBase(BaseModel):
     title: str
-    company: Optional[str] = None
-    job_url: Optional[str] = None
-    salary: Optional[str] = None
-    competency_profile: Optional[str] = "default"
     content: str
-    status: Optional[str] = "pending"
-    enabled: Optional[bool] = True
-    location: Optional[str] = None
-    job_type: Optional[str] = None
 
 
 class JobCreate(JobBase):
@@ -26,15 +18,7 @@ class JobCreate(JobBase):
 
 class JobUpdate(BaseModel):
     title: Optional[str] = None
-    company: Optional[str] = None
-    job_url: Optional[str] = None
-    salary: Optional[str] = None
-    competency_profile: Optional[str] = None
     content: Optional[str] = None
-    status: Optional[str] = None
-    enabled: Optional[bool] = None
-    location: Optional[str] = None
-    job_type: Optional[str] = None
 
 
 class JobResponse(JobBase):

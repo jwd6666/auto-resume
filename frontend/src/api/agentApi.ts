@@ -11,17 +11,20 @@ const AGENT = `${API_BASE}/agent`;
 export interface Job {
   id: number;
   title: string;
-  company?: string;
-  job_url?: string;
-  salary?: string;
-  competency_profile?: string;
   content: string;
-  status?: string;
-  enabled?: boolean;
-  location?: string;
-  job_type?: string;
   created_at: string;
   updated_at?: string;
+}
+
+export interface GreetedItem {
+  id: number;
+  task_id: string;
+  job_key: string;
+  day: string;
+  greeted_at: string;
+  title: string;
+  company: string;
+  jd_text: string;
 }
 
 export interface Resume {
@@ -704,6 +707,33 @@ export const agentApi = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+
+  async batchCreateJobs(jobs: { title: string; content: string }[]): Promise<Job[]> {
+    const r = await fetch(`${AGENT}/jobs/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobs }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+
+  async listGreetedRecent(days: number = 3): Promise<GreetedItem[]> {
+    const r = await fetch(`${API_BASE}/api/tasks/greeted-recent?days=${days}`);
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+    return data.items || [];
+  },
+
+  async batchDeleteGreeted(ids: number[]): Promise<{ ok: boolean; deleted: number }> {
+    const r = await fetch(`${API_BASE}/api/tasks/greeted-batch-delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
     });
     if (!r.ok) throw new Error(await r.text());
     return r.json();

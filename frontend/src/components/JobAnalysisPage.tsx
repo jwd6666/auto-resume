@@ -5,7 +5,7 @@ import {
   FileText, ImageIcon, Cpu, Settings, BookOpen, ListChecks, HelpCircle,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { agentApi, type CustomModel } from '../api/agentApi';
+import { agentApi, type CustomModel, type Job } from '../api/agentApi';
 
 const isDev = location.port === '5173';
 const API_BASE = isDev ? '' : ((window as any).autoresume?.apiBase || 'http://127.0.0.1:8765');
@@ -130,6 +130,9 @@ export function JobAnalysisPage() {
     skills: true, knowledge: true, plan: true, questions: true,
   });
 
+  const [jobList, setJobList] = useState<Job[]>([]);
+  const [jobDropdownOpen, setJobDropdownOpen] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadModels = useCallback(() => {
@@ -159,6 +162,23 @@ export function JobAnalysisPage() {
   useEffect(() => { loadModels(); }, [loadModels]);
 
   useEffect(() => {
+    agentApi.listJobs().then(setJobList).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const onLoadJob = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.content) {
+        setManualText(detail.content);
+        setInputMode('manual');
+        setJdParsed(null);
+      }
+    };
+    window.addEventListener('job-analysis-load', onLoadJob);
+    return () => window.removeEventListener('job-analysis-load', onLoadJob);
+  }, []);
+
+  useEffect(() => {
     const onModelsUpdated = () => loadModels();
     window.addEventListener('models-updated', onModelsUpdated);
     return () => window.removeEventListener('models-updated', onModelsUpdated);
@@ -173,6 +193,13 @@ export function JobAnalysisPage() {
       setModelReady(opt.hasKey);
       setModelDropdownOpen(false);
     } catch { /* */ }
+  };
+
+  const handleJobSelect = (job: Job) => {
+    setManualText(job.content);
+    setInputMode('manual');
+    setJdParsed(null);
+    setJobDropdownOpen(false);
   };
 
   const handleFileSelect = useCallback(async (file: File) => {
@@ -276,6 +303,43 @@ export function JobAnalysisPage() {
           <p className="text-sm text-slate-500 mt-0.5">分析职位技能要求，生成学习方案与面试题</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
+          {/* Job selector */}
+          <div className="relative">
+            <span className="text-xs text-slate-400 mr-1.5">岗位管理</span>
+            <button
+              onClick={() => setJobDropdownOpen(v => !v)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors bg-surface-800/60 text-slate-300 border border-slate-700/50 hover:bg-surface-700/60"
+            >
+              <Briefcase size={12} className="shrink-0" />
+              <span className="max-w-[160px] truncate">选择岗位 ({jobList.length})</span>
+              <ChevronDown size={12} className="shrink-0" />
+            </button>
+            {jobDropdownOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setJobDropdownOpen(false)} />
+                <div className="absolute right-0 top-full mt-1 w-72 max-h-72 overflow-y-auto scrollbar-thin bg-surface-800 border border-slate-700/60 rounded-xl shadow-2xl z-50 animate-fade-in">
+                  <div className="p-2 border-b border-slate-700/30">
+                    <p className="text-xs text-slate-400 px-2 py-1">点击岗位加载 JD 到分析区</p>
+                  </div>
+                  <div className="p-1.5 space-y-0.5">
+                    {jobList.length === 0 ? (
+                      <p className="text-xs text-slate-500 px-2.5 py-2">暂无岗位，请先到「岗位管理」添加</p>
+                    ) : (
+                      jobList.map(job => (
+                        <button
+                          key={job.id}
+                          onClick={() => handleJobSelect(job)}
+                          className="w-full text-left px-3 py-1.5 rounded-md text-xs text-slate-300 hover:bg-surface-700/40 transition-colors truncate"
+                        >
+                          {job.title}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
           {/* Model selector */}
           <div className="relative">
             <span className="text-xs text-slate-400 mr-1.5">模型选择</span>

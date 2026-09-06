@@ -7,7 +7,6 @@ import { AddModelModal, type CustomModelData } from './AddModelModal';
 export function ModelManagement() {
   const [settings, setSettings] = useState<SettingsInfo | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Record<string, { success: boolean; message: string }>>({});
   // 选中的 provider + model
@@ -41,19 +40,13 @@ export function ModelManagement() {
 
   useEffect(() => { load(); }, []);
 
-  const handleSave = async () => {
-    setSaving(true);
+  const activateModel = async (provider: string, model: string) => {
     try {
-      await agentApi.updateSettings({
-        provider: selProvider,
-        model: selModel,
-      });
+      await agentApi.updateSettings({ provider, model });
       await load();
-      alert('设置已保存');
+      window.dispatchEvent(new CustomEvent('models-updated'));
     } catch (e: any) {
-      alert(`保存失败：${e.message}`);
-    } finally {
-      setSaving(false);
+      alert(`激活模型失败：${e.message}`);
     }
   };
 
@@ -72,11 +65,7 @@ export function ModelManagement() {
   const handleAddModel = async (data: CustomModelData) => {
     try {
       const saved = await agentApi.addCustomModel(data);
-      await load();
-      window.dispatchEvent(new CustomEvent('models-updated'));
-      // 自动选中新添加的模型，方便用户接着点「保存设置」激活
-      setSelProvider(`custom:${saved.id}`);
-      setSelModel(saved.model_id);
+      await activateModel(`custom:${saved.id}`, saved.model_id);
     } catch (e: any) {
       alert(`添加模型失败：${e.message}`);
     }
@@ -86,10 +75,8 @@ export function ModelManagement() {
     if (!confirm(`确认删除模型「${cm.display_name || cm.model_id}」？`)) return;
     try {
       await agentApi.deleteCustomModel(cm.id);
-      // 如果删除的正是当前选中的模型，回退选中状态
       if (selProvider === `custom:${cm.id}`) {
-        setSelProvider('');
-        setSelModel('');
+        await agentApi.updateSettings({ provider: '', model: '' });
       }
       await load();
       window.dispatchEvent(new CustomEvent('models-updated'));
@@ -103,13 +90,10 @@ export function ModelManagement() {
     if (!confirm(`确认删除选中的 ${checked.size} 个模型？`)) return;
     setBatchDeleting(true);
     try {
-      for (const id of checked) await agentApi.deleteCustomModel(id);
-      // 如果当前选中模型被删除，清空选中
       const selId = selProvider.replace('custom:', '');
-      if (checked.has(selId)) {
-        setSelProvider('');
-        setSelModel('');
-      }
+      let needClear = checked.has(selId);
+      for (const id of checked) await agentApi.deleteCustomModel(id);
+      if (needClear) await agentApi.updateSettings({ provider: '', model: '' });
       setChecked(new Set());
       setBatchMode(false);
       await load();
@@ -182,51 +166,50 @@ export function ModelManagement() {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-xl font-bold text-slate-100">模型管理</h1>
-          <p className="text-sm text-slate-500 mt-0.5">配置自定义 AI 模型，选中后 Agent 将使用该模型</p>
+          <p className="text-sm text-slate-500 mt-0.5">配置自定义 AI 模型，选中即激活</p>
         </div>
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="btn-primary"
-        >
-          {saving ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
-          保存设置
-        </button>
-      </div>
-
-      {/* 当前选中状态 */}
-      <div className="card p-3 mb-4 flex items-center gap-3">
-        <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-accent-blue/20 to-accent-purple/20 flex items-center justify-center">
-          <Zap size={18} className="text-accent-blue" />
-        </div>
-        <div>
-          <p className="text-xs text-slate-500">当前使用</p>
-          <p className="text-sm font-medium text-slate-200">
-            {selProvider.startsWith('custom:')
-              ? `自定义 · ${customModels.find(c => `custom:${c.id}` === selProvider)?.display_name || customModels.find(c => `custom:${c.id}` === selProvider)?.model_id || selModel || '未设置'}`
-              : selModel
-                ? `${selProvider} · ${selModel}`
-                : '未设置'}
-          </p>
-        </div>
-      </div>
-
-      {/* 操作按钮栏 */}
-      <div className="flex items-center gap-2 mb-3">
         <button
           onClick={() => setShowAddModal(true)}
-          className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-md bg-accent-blue/20 text-accent-blue hover:bg-accent-blue/30 transition-colors"
+          className="btn-primary"
         >
-          <Plus size={14} />
-          添加模型
+          <Plus size={14} /> 添加模型
         </button>
-        <button
-          onClick={() => { setBatchMode(m => !m); setChecked(new Set()); }}
-          className={`flex items-center gap-1 text-xs px-3 py-1.5 rounded-md transition-colors ${batchMode ? 'bg-accent-blue/20 text-accent-blue' : 'bg-surface-700/50 text-slate-400 hover:text-slate-200 hover:bg-surface-700'}`}
-        >
-          <ListChecks size={14} />
-          批量删除
-        </button>
+      </div>
+
+      {selProvider.startsWith('custom:') && selModel ? (
+        <div className="card p-3 mb-4 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-accent-blue/20 to-accent-purple/20 flex items-center justify-center">
+            <Zap size={18} className="text-accent-blue" />
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">当前使用</p>
+            <p className="text-sm font-medium text-slate-200">
+              {customModels.find(c => `custom:${c.id}` === selProvider)?.display_name || selModel}
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="card p-3 mb-4 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-surface-800/60 flex items-center justify-center">
+            <ZapOff size={18} className="text-slate-600" />
+          </div>
+          <div>
+            <p className="text-xs text-slate-500">当前使用</p>
+            <p className="text-sm font-medium text-slate-400">未设置 — 请添加并选中一个模型</p>
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 mb-3">
+        {customModels.length > 0 && (
+          <button
+            onClick={() => { setBatchMode(m => !m); setChecked(new Set()); }}
+            className={`flex items-center gap-1 text-xs px-3 py-1.5 rounded-md transition-colors ${batchMode ? 'bg-accent-blue/20 text-accent-blue' : 'bg-surface-700/50 text-slate-400 hover:text-slate-200 hover:bg-surface-700'}`}
+          >
+            <ListChecks size={14} />
+            批量删除
+          </button>
+        )}
       </div>
 
       {/* 批量操作工具栏 */}
@@ -283,7 +266,7 @@ export function ModelManagement() {
                       />
                     ) : (
                       <button
-                        onClick={() => { setSelProvider(cmKey); setSelModel(cm.model_id); }}
+                        onClick={() => activateModel(cmKey, cm.model_id)}
                         className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all shrink-0 ${
                           isActive ? 'border-accent-blue bg-accent-blue' : 'border-slate-600 hover:border-slate-400'
                         }`}
@@ -352,7 +335,7 @@ export function ModelManagement() {
       {/* 底部提示 */}
       <div className="mt-3 px-3 py-2 rounded-lg bg-surface-800/40 text-xs text-slate-500 flex items-center gap-2">
         <ZapOff size={12} />
-        提示：选中某个模型后点击「保存设置」，Agent 简历优化功能将使用该模型进行 AI 对话和评估。
+        提示：选中模型即自动激活，Agent 简历优化功能将使用该模型进行 AI 对话和评估。
       </div>
 
       {/* 添加 / 编辑模型弹窗 */}
