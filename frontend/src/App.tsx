@@ -27,6 +27,25 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    (async () => {
+      try {
+        const st = await api.licenseStatus();
+        setLicensed(!!st.licensed);
+      } catch {
+        // 后端不可达：保持主界面，由业务请求错误兜底
+        setLicensed(true);
+      }
+    })();
+    const t = setInterval(async () => {
+      try {
+        const st = await api.licenseStatus();
+        setLicensed(!!st.licensed);
+      } catch { /* 忽略 */ }
+    }, 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
     refresh().catch((e) => setError(`后端连接失败：${e.message}`));
     const t = setInterval(() => { refresh().catch(() => {}); }, 5000);
     return () => clearInterval(t);

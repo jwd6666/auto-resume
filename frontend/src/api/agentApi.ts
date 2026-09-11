@@ -69,6 +69,7 @@ export interface ChatMessage {
   references?: RefChip[];
   scorecard?: Scorecard;
   patches?: HtmlPatch[];
+  snapshotDepth?: number;
 }
 
 export interface BackgroundProfile {
@@ -329,6 +330,16 @@ export const agentApi = {
     });
   },
 
+  async rollbackSnapshot(resumeId: number, targetDepth: number): Promise<{ ok: boolean; message: string; popped: number; current_depth: number }> {
+    const r = await fetch(`${AGENT}/chat/rollback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resume_id: resumeId, target_depth: targetDepth }),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+
   /** 流式对话，返回 AsyncGenerator */
   async *chatStream(
     resumeId: number,
@@ -336,7 +347,7 @@ export const agentApi = {
     messages: ChatMessage[],
     userBackground?: string,
     signal?: AbortSignal,
-  ): AsyncGenerator<{ type: 'text' | 'patch' | 'tool_call' | 'tool_result' | 'error' | 'done'; content?: string; resumePartId?: string; newHtml?: string; toolName?: string; arguments?: any; result?: string }> {
+  ): AsyncGenerator<{ type: 'text' | 'patch' | 'tool_call' | 'tool_result' | 'error' | 'done' | 'snapshot_depth'; content?: string; resumePartId?: string; newHtml?: string; toolName?: string; arguments?: any; result?: string; depth?: number }> {
     const r = await fetch(`${AGENT}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -366,6 +377,7 @@ export const agentApi = {
               else if (data.type === 'patch') yield { type: 'patch', resumePartId: data.resumePartId, newHtml: data.newHtml };
               else if (data.type === 'tool_call') yield { type: 'tool_call', toolName: data.name, arguments: data.arguments };
               else if (data.type === 'tool_result') yield { type: 'tool_result', toolName: data.name, result: data.result };
+              else if (data.type === 'snapshot_depth') yield { type: 'snapshot_depth', depth: data.depth };
               else if (data.type === 'error') { yield { type: 'error', content: data.content }; return; }
               else if (data.type === 'done') { yield { type: 'done' }; return; }
             } catch { /* skip */ }
@@ -384,6 +396,17 @@ export const agentApi = {
     return r.json();
   },
 
+  /**
+   * 内置浏览器预览（Electron webview）用：返回可加载简历原始 HTML 的绝对 URL。
+   * dev 走 Vite 时 API_BASE 为空，需直接指向后端端口。
+   */
+  webviewResumeUrl(resumeId: number): string {
+    const base = isDev
+      ? 'http://127.0.0.1:8765'
+      : (window as any).autoresume?.apiBase || 'http://127.0.0.1:8765';
+    return `${base}${AGENT.replace(API_BASE, '')}/resumes/${resumeId}/resume.html`;
+  },
+
   /** 订阅简历文件变更 WebSocket，返回关闭函数 */
   subscribeResumeFileChange(
     resumeId: number,
@@ -399,10 +422,14 @@ export const agentApi = {
     const connect = () => {
       if (closed) return;
       ws = new WebSocket(wsUrl);
+      ws.onopen = () => {
+      };
       ws.onmessage = (e) => {
         try {
           const data = JSON.parse(e.data);
-          if (data.type === 'file_changed') onFileChange(data);
+          if (data.type === 'file_changed') {
+            onFileChange(data);
+          }
         } catch { /* skip */ }
       };
       ws.onclose = () => {

@@ -89,6 +89,7 @@ function createMainWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      webviewTag: true,
       preload: path.join(__dirname, 'preload.cjs'),
     },
   });

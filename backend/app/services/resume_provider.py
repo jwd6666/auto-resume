@@ -579,6 +579,30 @@ def _resolve_current_provider(settings: dict) -> Tuple[str, str, str, str]:
     return pconfig.get("base_url", ""), api_key, model, "openai_compat"
 
 
+def _get_context_input(settings: dict) -> int:
+    """获取当前模型的输入 token 上限（context window）。
+
+    自定义模型使用其 context_input 配置；内置模型按 provider 默认值。
+    """
+    provider = settings.get("provider", "")
+    if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
+        cm = get_custom_model(provider, settings)
+        if cm:
+            return int(cm.get("context_input") or 128000)
+    if provider == CUSTOM_PROVIDER_KEY:
+        custom_cfg = settings.get("custom", {})
+        return 128000
+    _PROVIDER_DEFAULTS = {
+        "anthropic": 200000,
+        "qwen": 131072,
+        "zhipu": 128000,
+        "deepseek": 128000,
+        "moonshot": 131072,
+        "baidu": 128000,
+    }
+    return _PROVIDER_DEFAULTS.get(provider, 128000)
+
+
 def _get_context_output(settings: dict) -> int:
     """获取当前模型的输出 token 上限。
 
@@ -759,6 +783,104 @@ async def stream_response(
 
 # ── 工具调用流式支持 ────────────────────────────────────────
 
+def _repair_json_args(raw: str) -> dict | None:
+    """尝试修复模型返回的非法 JSON arguments（DeepSeek 等模型常见问题）。
+
+    常见问题：
+    1. 字符串值内含未转义的换行/引号
+    2. 缺少闭合引号或大括号
+    3. 截断（流式输出提前结束）
+    """
+    if not raw or not raw.strip():
+        return None
+
+    s = raw.strip()
+
+    # 尝试 1：直接解析
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+
+    # 尝试 2：补全截断的 JSON — 找到最后一个完整的 key:value 对
+    depth = 0
+    in_str = False
+    escape = False
+    last_safe_end = 0
+    for i, ch in enumerate(s):
+        if escape:
+            escape = False
+            continue
+        if ch == '\\' and in_str:
+            escape = True
+            continue
+        if ch == '"' and not escape:
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(s[:i + 1])
+                except json.JSONDecodeError:
+                    pass
+        elif ch == ',':
+            last_safe_end = i
+
+    # 尝试 3：在最后一个安全逗号处截断，补全闭合括号
+    if last_safe_end > 0:
+        truncated = s[:last_safe_end]
+        depth = 0
+        for ch in truncated:
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+        closing = '}' * max(depth, 1)
+        try:
+            return json.loads(truncated + closing)
+        except json.JSONDecodeError:
+            pass
+
+    # 尝试 4：暴力修复 — 用正则提取 key-value 对
+    try:
+        result = {}
+        kv_pattern = re.compile(r'"(\w+)"\s*:\s*"')
+        pos = 0
+        while pos < len(s):
+            m = kv_pattern.search(s, pos)
+            if not m:
+                break
+            key = m.group(1)
+            val_start = m.end()
+            # 找到值的结束位置（未转义的引号）
+            end = val_start
+            while end < len(s):
+                if s[end] == '\\':
+                    end += 2
+                    continue
+                if s[end] == '"':
+                    break
+                end += 1
+            if end < len(s):
+                val_raw = s[val_start:end]
+                result[key] = val_raw
+                pos = end + 1
+            else:
+                # 未闭合的字符串 — 取剩余部分
+                result[key] = s[val_start:]
+                break
+        if result:
+            return result
+    except Exception:
+        pass
+
+    return None
+
 async def stream_with_tools(
     system: str,
     messages: list,
@@ -836,78 +958,90 @@ async def stream_with_tools(
 
     openai_messages = [{"role": "system", "content": system}] + messages
 
-    try:
+    async def _run_once(tool_choice_val: str):
+        """执行一次流式工具调用，产出 text / tool_calls / done 事件。"""
+        # 累积 tool_calls（按 index 分组，因为分块到达）
+        tool_call_acc: Dict[int, dict] = {}
         stream = await client.chat.completions.create(
             model=model,
             messages=openai_messages,
             stream=True,
             max_tokens=max_tokens,
             tools=tools,
-            tool_choice=tool_choice,
+            tool_choice=tool_choice_val,
         )
-    except Exception as e:
-        # 工具调用不被模型支持时，退回纯文本流
-        msg = str(e)
-        if "tool" in msg.lower() or "function" in msg.lower() or "unspported" in msg.lower() or "not support" in msg.lower():
-            async for text in _stream_openai_compat(base_url, api_key, model, system, messages, max_tokens):
-                yield {"type": "text", "content": text}
-            yield {"type": "done"}
+        try:
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+
+                # 文本
+                if delta.content:
+                    yield {"type": "text", "content": delta.content}
+
+                # tool_calls 分块累积
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in tool_call_acc:
+                            tool_call_acc[idx] = {
+                                "id": tc.id or "",
+                                "name": "",
+                                "arguments": "",
+                            }
+                        if tc.id:
+                            tool_call_acc[idx]["id"] = tc.id
+                        if tc.function:
+                            if tc.function.name:
+                                tool_call_acc[idx]["name"] += tc.function.name
+                            if tc.function.arguments:
+                                tool_call_acc[idx]["arguments"] += tc.function.arguments
+
+                # finish_reason
+                if chunk.choices[0].finish_reason == "tool_calls":
+                    break
+        except Exception as e:
+            yield {"type": "text", "content": f"\n\n[流式输出中断: {str(e)[:200]}]"}
+
+        if tool_call_acc:
+            calls = []
+            for idx in sorted(tool_call_acc.keys()):
+                tc = tool_call_acc[idx]
+                raw_args = tc["arguments"]
+                if raw_args:
+                    try:
+                        args = json.loads(raw_args)
+                    except json.JSONDecodeError:
+                        args = _repair_json_args(raw_args)
+                else:
+                    args = {}
+                calls.append({"id": tc["id"], "name": tc["name"], "arguments": args, "raw_arguments": raw_args})
+            yield {"type": "tool_calls", "calls": calls}
+
+        yield {"type": "done"}
+
+    # 某些 provider（如 DeepSeek）不支持 tool_choice="required"，
+    # 若指定了 required 且首次调用失败，则退一步用 "auto" 重试，保证工具调用可用。
+    attempts = ["required", "auto"] if tool_choice == "required" else [tool_choice]
+    last_err: Optional[Exception] = None
+    for attempt in attempts:
+        try:
+            async for event in _run_once(attempt):
+                yield event
             return
-        yield {"type": "text", "content": f"\n\n[API 调用失败: {msg[:300]}]"}
+        except Exception as e:
+            last_err = e
+            continue
+
+    # 多次尝试均失败：若模型本身不支持工具调用，则退回纯文本流
+    msg = str(last_err)
+    if "tool" in msg.lower() or "function" in msg.lower() or "unspported" in msg.lower() or "not support" in msg.lower():
+        async for text in _stream_openai_compat(base_url, api_key, model, system, messages, max_tokens):
+            yield {"type": "text", "content": text}
         yield {"type": "done"}
         return
-
-    # 累积 tool_calls（按 index 分组，因为分块到达）
-    tool_call_acc: Dict[int, dict] = {}
-
-    try:
-        async for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-
-            # 文本
-            if delta.content:
-                yield {"type": "text", "content": delta.content}
-
-            # tool_calls 分块累积
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if idx not in tool_call_acc:
-                        tool_call_acc[idx] = {
-                            "id": tc.id or "",
-                            "name": "",
-                            "arguments": "",
-                        }
-                    if tc.id:
-                        tool_call_acc[idx]["id"] = tc.id
-                    if tc.function:
-                        if tc.function.name:
-                            tool_call_acc[idx]["name"] += tc.function.name
-                        if tc.function.arguments:
-                            tool_call_acc[idx]["arguments"] += tc.function.arguments
-
-            # finish_reason
-            if chunk.choices[0].finish_reason == "tool_calls":
-                break
-    except Exception as e:
-        yield {"type": "text", "content": f"\n\n[流式输出中断: {str(e)[:200]}]"}
-
-    if tool_call_acc:
-        calls = []
-        for idx in sorted(tool_call_acc.keys()):
-            tc = tool_call_acc[idx]
-            raw_args = tc["arguments"]
-            if raw_args:
-                try:
-                    args = json.loads(raw_args)
-                except json.JSONDecodeError:
-                    args = None
-            else:
-                args = {}
-            calls.append({"id": tc["id"], "name": tc["name"], "arguments": args, "raw_arguments": raw_args})
-        yield {"type": "tool_calls", "calls": calls}
-
+    yield {"type": "text", "content": f"\n\n[API 调用失败: {msg[:300]}]"}
     yield {"type": "done"}
+    return
 

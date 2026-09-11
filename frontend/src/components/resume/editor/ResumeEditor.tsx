@@ -1,11 +1,9 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import {
   Save, Download, Loader2, FileDown,
-  AlertTriangle, X, FileText, Code2, Eye, Send, HardDrive, MousePointer2, Wand2,
+  AlertTriangle, X, FileText, RefreshCw, Globe, MousePointer2, Wand2, Lock,
 } from 'lucide-react';
 import { agentApi, type Job, type Resume } from '../../../api/agentApi';
-
-const A4_H = 1123;
 
 interface Props {
   resume: Resume | null;
@@ -17,36 +15,16 @@ interface Props {
   onRestyle?: () => void;
 }
 
-function stripMediaPrintCss(css: string): string {
-  let result = '';
-  let cursor = 0;
-  const marker = /@media\s+print\s*\{/gi;
-  let match: RegExpExecArray | null;
-  while ((match = marker.exec(css))) {
-    const open = css.indexOf('{', match.index);
-    let depth = 0;
-    let end = -1;
-    for (let i = open; i < css.length; i += 1) {
-      if (css[i] === '{') depth += 1;
-      else if (css[i] === '}') {
-        depth -= 1;
-        if (depth === 0) {
-          end = i + 1;
-          break;
-        }
-      }
-    }
-    if (end < 0) break;
-    result += css.slice(cursor, match.index);
-    cursor = end;
-    marker.lastIndex = end;
-  }
-  return result + css.slice(cursor);
-}
+/**
+ * 在 webview 内运行的「元素选择器」脚本。
+ * - 通过 window.__pickResume 暴露 activate/deactivate 供父层 executeJavaScript 调用
+ * - 拾取结果用 console.log('__RESUME_PICKER__', JSON) 上报，父层监听 webview 的 console-message
+ */
+const PICKER_SCRIPT = `
+(() => {
+  if (window.__resumePickerInstalled) return;
+  window.__resumePickerInstalled = true;
 
-const IFRAME_SCRIPT = `
-<script>
-(function() {
   var active = false;
   var hlOverlay = null;
   var tagLabel = null;
@@ -127,109 +105,127 @@ const IFRAME_SCRIPT = `
     var tagNm = target.tagName.toLowerCase();
     var sectionId = target.getAttribute('data-resume-section') || '';
     var textContent = (target.textContent || '').trim().slice(0, 300);
-    cleanup();
-    active = false;
-    document.body.style.cursor = '';
-    window.parent.postMessage({ type: 'picker-picked', tagName: tagNm, sectionId: sectionId, textContent: textContent }, '*');
+    window.__resumePickerDeactivate();
+    console.log('__RESUME_PICKER__' + JSON.stringify({ tagName: tagNm, sectionId: sectionId, textContent: textContent }));
   }
 
-  window.addEventListener('message', function(e) {
-    if (!e.data) return;
-    if (e.data.type === 'picker-activate') {
-      active = true;
-      document.body.style.cursor = 'crosshair';
-      ensureUI();
-    } else if (e.data.type === 'picker-deactivate') {
-      active = false;
-      document.body.style.cursor = '';
-      cleanup();
+  function onKey(e) {
+    if (e.key === 'Escape' && active) {
+      window.__resumePickerDeactivate();
+      console.log('__RESUME_PICKER_ESC__');
     }
-  });
+  }
+
+  window.__resumePickerActivate = function() {
+    active = true;
+    document.body.style.cursor = 'crosshair';
+    ensureUI();
+  };
+
+  window.__resumePickerDeactivate = function() {
+    active = false;
+    document.body.style.cursor = '';
+    cleanup();
+  };
 
   document.addEventListener('mousemove', onMove, true);
   document.addEventListener('click', onDocClick, true);
-  document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape' && active) {
-      active = false;
-      document.body.style.cursor = '';
-      cleanup();
-      window.parent.postMessage({ type: 'picker-esc' }, '*');
-    }
-  });
+  document.addEventListener('keydown', onKey, true);
 })();
+`;
 
-// 高度自适应上报：内容变化（图片加载/字体渲染/DOM变更）时通知父页面调整 iframe 高度
-(function() {
-  var lastH = 0;
-  function reportH() {
-    var b = document.body, d = document.documentElement;
-    var h = Math.max(b ? b.scrollHeight : 0, d ? d.scrollHeight : 0);
-    if (h > 0 && Math.abs(h - lastH) > 1) {
-      lastH = h;
-      window.parent.postMessage({ type: 'iframe-height', height: h }, '*');
-    }
-  }
-  if (document.readyState === 'complete') setTimeout(reportH, 0);
-  else window.addEventListener('load', function() { setTimeout(reportH, 0); });
-  if (typeof ResizeObserver !== 'undefined') {
-    var ro = new ResizeObserver(function() { reportH(); });
-    if (document.body) ro.observe(document.body);
-    if (document.documentElement) ro.observe(document.documentElement);
-  }
-  if (typeof MutationObserver !== 'undefined' && document.body) {
-    new MutationObserver(function() { reportH(); }).observe(document.body, { childList: true, subtree: true, attributes: true });
-  }
-})();
-</script>`;
-
-export function ResumeEditor({ resume, job, onSaved, onInsertTag, sourceHtml, onSourceHtmlChange, onRestyle }: Props) {
-  const [mode, setMode] = useState<'preview' | 'source'>('preview');
+export function ResumeEditor({ resume, onSaved, onInsertTag, sourceHtml, onSourceHtmlChange, onRestyle }: Props) {
   const [pickerMode, setPickerMode] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
   const [dirty, setDirty] = useState(false);
-
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const sourceAreaRef = useRef<HTMLTextAreaElement>(null);
-  const debounceRef = useRef<number | undefined>(undefined);
   const [filePath, setFilePath] = useState<string>('');
-  const [iframeHeight, setIframeHeight] = useState(A4_H);
 
-  const activatePicker = useCallback(() => {
-    iframeRef.current?.contentWindow?.postMessage({ type: 'picker-activate' }, '*');
+  const webviewRef = useRef<any>(null);
+
+  const resumeUrl = resume?.id != null ? agentApi.webviewResumeUrl(resume.id) : '';
+
+  /** 向 webview 注入元素选择器脚本（幂等），返回是否成功 */
+  const ensurePickerInstalled = useCallback((): boolean => {
+    const wv = webviewRef.current;
+    if (!wv || typeof wv.executeJavaScript !== 'function') return false;
+    try {
+      wv.executeJavaScript(PICKER_SCRIPT, false);
+      return true;
+    } catch {
+      return false;
+    }
   }, []);
 
-  const deactivatePicker = useCallback(() => {
-    iframeRef.current?.contentWindow?.postMessage({ type: 'picker-deactivate' }, '*');
+  /** 向 webview 调用元素选择器的启用/停用函数 */
+  const runPickerAction = useCallback((fn: string) => {
+    const wv = webviewRef.current;
+    if (!wv || typeof wv.executeJavaScript !== 'function') return;
+    try {
+      // 每次操作前先注入脚本，避免 webview 重新加载后脚本丢失导致功能失效
+      wv.executeJavaScript(PICKER_SCRIPT, false);
+      wv.executeJavaScript(`(window.${fn}) && window.${fn}()`, false);
+    } catch { /* webview 未就绪 */ }
   }, []);
+
+  const activatePicker = useCallback(() => runPickerAction('__resumePickerActivate'), [runPickerAction]);
+  const deactivatePicker = useCallback(() => runPickerAction('__resumePickerDeactivate'), [runPickerAction]);
 
   useEffect(() => {
-    if (pickerMode && mode === 'preview') {
-      activatePicker();
-    } else {
-      deactivatePicker();
-      if (!pickerMode) return;
+    if (pickerMode) activatePicker();
+    else deactivatePicker();
+  }, [pickerMode, activatePicker, deactivatePicker]);
+
+  /** webview 加载完成后：重新注入选择器，若处于选择模式则激活 */
+  const handleDidFinishLoad = useCallback(() => {
+    const wv = webviewRef.current;
+    if (!wv || typeof wv.executeJavaScript !== 'function') return;
+    try {
+      wv.executeJavaScript(PICKER_SCRIPT, false);
+      if (pickerMode) {
+        wv.executeJavaScript('window.__resumePickerActivate && window.__resumePickerActivate()', false);
+      }
+    } catch { /* */ }
+  }, [pickerMode]);
+
+  /** 选择模式开启后同时聚焦 webview，避免内部按钮拦截页面 keydown */
+  useEffect(() => {
+    if (!pickerMode) return;
+    try { webviewRef.current?.focus?.(); } catch { /* */ }
+  }, [pickerMode]);
+
+  /** webview 触发 console 消息：捕获元素选择结果 */
+  const handleConsoleMessage = useCallback((e: any) => {
+    const msg = typeof e?.message === 'string' ? e.message : '';
+    if (msg?.startsWith('__RESUME_PICKER__')) {
+      try {
+        const data = JSON.parse(msg.slice('__RESUME_PICKER__'.length));
+        if (data?.tagName && onInsertTagRef.current) onInsertTagRef.current(data.tagName, data.sectionId || '', data.textContent || '');
+        setPickerMode(false);
+      } catch { /* */ }
+    } else if (msg === '__RESUME_PICKER_ESC__') {
       setPickerMode(false);
     }
-  }, [pickerMode, mode, activatePicker, deactivatePicker]);
+  }, []);
+
+  const onInsertTagRef = useRef(onInsertTag);
+  useEffect(() => { onInsertTagRef.current = onInsertTag; }, [onInsertTag]);
 
   useEffect(() => {
-    const handler = (e: MessageEvent) => {
-      if (e.data?.type === 'picker-picked') {
-        const tagName = e.data.tagName || '';
-        const sectionId = e.data.sectionId || '';
-        const textContent = e.data.textContent || '';
-        if (tagName && onInsertTag) onInsertTag(tagName, sectionId, textContent);
-        setPickerMode(false);
-      } else if (e.data?.type === 'picker-esc') {
-        setPickerMode(false);
-      } else if (e.data?.type === 'iframe-height' && typeof e.data.height === 'number') {
-        setIframeHeight(Math.max(e.data.height, 200));
-      }
+    const wv = webviewRef.current;
+    if (!wv) return;
+    const onDomReady = () => {
+      try { wv.executeJavaScript(PICKER_SCRIPT, false); } catch { /* */ }
     };
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
-  }, [onInsertTag]);
+    wv.addEventListener('did-finish-load', handleDidFinishLoad);
+    wv.addEventListener('dom-ready', onDomReady);
+    wv.addEventListener('console-message', handleConsoleMessage);
+    return () => {
+      wv.removeEventListener('did-finish-load', handleDidFinishLoad);
+      wv.removeEventListener('dom-ready', onDomReady);
+      wv.removeEventListener('console-message', handleConsoleMessage);
+    };
+  }, [handleDidFinishLoad, handleConsoleMessage, ensurePickerInstalled]);
 
   useEffect(() => {
     if (!pickerMode) return;
@@ -240,6 +236,7 @@ export function ResumeEditor({ resume, job, onSaved, onInsertTag, sourceHtml, on
     return () => window.removeEventListener('keydown', handler);
   }, [pickerMode]);
 
+  /** 订阅简历文件变更：AI 写入新文件后自动刷新内置浏览器 */
   useEffect(() => {
     if (!resume?.id) { setFilePath(''); return; }
     const unsubscribe = agentApi.subscribeResumeFileChange(resume.id, async (data: any) => {
@@ -248,62 +245,26 @@ export function ResumeEditor({ resume, job, onSaved, onInsertTag, sourceHtml, on
         const fileData = await agentApi.getResumeFile(resume.id);
         if (fileData.path) setFilePath(fileData.path);
         if (fileData.html) {
-          onSourceHtmlChange(fileData.html);
+          onSourceChangeRef.current(fileData.html);
           setDirty(false);
         }
+        // 刷新内置浏览器，使磁盘文件的最新内容生效
+        webviewRef.current?.reload?.();
       } catch { /* */ }
     });
     agentApi.getResumeFile(resume.id).then(d => {
       if (d.path) setFilePath(d.path);
-      if (d.html) onSourceHtmlChange(d.html);
+      if (d.html) onSourceChangeRef.current(d.html);
     }).catch(() => {});
     return unsubscribe;
   }, [resume?.id]);
 
-  const buildIframeSrc = useCallback((html: string) => {
-    let body = html;
-    const bodyMatch = body.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-    if (bodyMatch) body = bodyMatch[1];
-    let css = '';
-    const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/gi);
-    if (styleMatch) {
-      css = stripMediaPrintCss(styleMatch.join('\n'));
-    }
-    return `<!DOCTYPE html><html><head>${css ? `<style>html,body{margin:0;padding:0;background:#fff;position:relative;overflow:hidden;}</style>${css}` : '<style>html,body{margin:0;padding:0;background:#fff;overflow:hidden;}</style>'}</head><body>${body}${IFRAME_SCRIPT}</body></html>`;
+  const onSourceChangeRef = useRef(onSourceHtmlChange);
+  useEffect(() => { onSourceChangeRef.current = onSourceHtmlChange; }, [onSourceHtmlChange]);
+
+  const handleReload = useCallback(() => {
+    webviewRef.current?.reloadIgnoringCache?.() ?? webviewRef.current?.reload?.();
   }, []);
-
-  const iframeSrcdoc = useMemo(() => {
-    if (!sourceHtml) return '';
-    return buildIframeSrc(sourceHtml);
-  }, [sourceHtml, buildIframeSrc]);
-
-  useEffect(() => {
-    if (iframeRef.current && iframeSrcdoc) {
-      iframeRef.current.srcdoc = iframeSrcdoc;
-    }
-  }, [iframeSrcdoc]);
-
-  const handleIframeLoad = useCallback(() => {
-    const doc = iframeRef.current?.contentDocument;
-    if (doc?.body) {
-      requestAnimationFrame(() => {
-        const h = doc.documentElement?.scrollHeight || doc.body.scrollHeight;
-        if (h > 0) setIframeHeight(Math.max(h, 200));
-      });
-    }
-    if (pickerMode && mode === 'preview') {
-      activatePicker();
-    }
-  }, [pickerMode, mode, activatePicker]);
-
-  const handleSourceChange = useCallback((val: string) => {
-    onSourceHtmlChange(val);
-    setDirty(true);
-    window.clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(() => {
-      if (iframeRef.current) iframeRef.current.srcdoc = buildIframeSrc(val);
-    }, 500);
-  }, [onSourceHtmlChange, buildIframeSrc]);
 
   const handleSave = async () => {
     if (!resume) return;
@@ -370,9 +331,8 @@ export function ResumeEditor({ resume, job, onSaved, onInsertTag, sourceHtml, on
         setErr('导出 PDF 需要打开新窗口，请允许浏览器弹窗后重试');
         return;
       }
-      const printableHtml = html;
       w.document.open();
-      w.document.write(printableHtml);
+      w.document.write(html);
       w.document.close();
       const doPrint = () => {
         setTimeout(() => {
@@ -417,40 +377,19 @@ export function ResumeEditor({ resume, job, onSaved, onInsertTag, sourceHtml, on
   }
 
   return (
-    <div className="flex flex-col min-h-full">
+    <div className="flex flex-col h-full min-h-0">
       <div className="no-print shrink-0 flex items-center gap-3 flex-wrap pb-3 mb-3 border-b border-slate-700/30">
-        <div className="flex items-center gap-1 bg-surface-900/60 rounded-lg p-1">
-          <button
-            onClick={() => setMode('preview')}
-            className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-md transition-colors ${
-              mode === 'preview' ? 'bg-accent-blue/20 text-accent-blue' : 'text-slate-500 hover:text-slate-300'
-            }`}
-          >
-            <Eye size={12} /> 预览
-          </button>
-          <button
-            onClick={() => setMode('source')}
-            className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-md transition-colors ${
-              mode === 'source' ? 'bg-accent-blue/20 text-accent-blue' : 'text-slate-500 hover:text-slate-300'
-            }`}
-          >
-            <Code2 size={12} /> 源码
-          </button>
-        </div>
-
-        {mode === 'preview' && (
-          <button
-            onClick={() => setPickerMode(p => !p)}
-            className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg transition-colors ${
-              pickerMode
-                ? 'bg-green-500/20 text-green-400 border border-green-500/30'
-                : 'bg-surface-900/60 text-slate-400 hover:text-slate-200 border border-transparent'
-            }`}
-            title={pickerMode ? '退出元素选择 (Esc)' : '元素选择模式'}
-          >
-            <MousePointer2 size={13} /> {pickerMode ? '选择中...' : '元素选择'}
-          </button>
-        )}
+        <button
+          onClick={() => setPickerMode(p => !p)}
+          className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg transition-colors ${
+            pickerMode
+              ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+              : 'bg-surface-900/60 text-slate-400 hover:text-slate-200 border border-transparent'
+          }`}
+          title={pickerMode ? '退出元素选择 (Esc)' : '元素选择模式'}
+        >
+          <MousePointer2 size={13} /> {pickerMode ? '选择中...' : '元素选择'}
+        </button>
 
         {onRestyle && (
           <button
@@ -489,13 +428,6 @@ export function ResumeEditor({ resume, job, onSaved, onInsertTag, sourceHtml, on
         >
           <Download size={13} /> 导出 HTML
         </button>
-
-        {filePath && (
-          <span className="flex items-center gap-1 text-xs text-slate-500 max-w-[220px] truncate" title={filePath}>
-            <HardDrive size={11} className="shrink-0" />
-            <span className="truncate">{filePath.split(/[\\/]/).pop()}</span>
-          </span>
-        )}
       </div>
 
       {err && (
@@ -506,48 +438,40 @@ export function ResumeEditor({ resume, job, onSaved, onInsertTag, sourceHtml, on
         </div>
       )}
 
-      {mode === 'preview' ? (
-        <iframe
-          ref={iframeRef}
-          srcDoc={iframeSrcdoc}
-          onLoad={handleIframeLoad}
-          className="print-resume-frame"
-          style={{
-            width: '100%',
-            height: iframeHeight,
-            border: 'none',
-            background: '#fff',
-            display: 'block',
-            flexShrink: 0,
-          }}
-          sandbox={(window as any).autoresume ? undefined : "allow-scripts"}
-        />
-      ) : (
-        <div className="flex flex-col" style={{ height: 'calc(100vh - 160px)' }}>
-          <div className="flex-1 min-h-0">
-            <textarea
-              ref={sourceAreaRef}
-              value={sourceHtml}
-              onChange={e => handleSourceChange(e.target.value)}
-              className="w-full h-full bg-surface-900/60 border border-slate-700/50 rounded-md px-3 py-2 text-[11px] text-slate-300 font-mono resize-none scrollbar-thin focus:border-accent-blue/50 focus:outline-none"
-              spellCheck={false}
-            />
-          </div>
-          <div className="shrink-0 flex items-center justify-end gap-2 pt-2">
-            <button
-              onClick={() => {}}
-              className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg bg-accent-blue/20 text-accent-blue hover:bg-accent-blue/30 transition-colors"
-            >
-              <Send size={11} /> 发给AI修改
-            </button>
-          </div>
+      {/* 内置浏览器地址栏 */}
+      <div className="no-print shrink-0 flex items-center gap-2 mb-2 bg-surface-900/60 border border-slate-700/50 rounded-md px-2 py-1">
+        <Globe size={13} className="text-accent-blue shrink-0" />
+        <div className="flex items-center gap-1.5 bg-surface-800/80 border border-slate-700/40 rounded px-2 py-1 flex-1 min-w-0">
+          <Lock size={11} className="text-emerald-400 shrink-0" />
+          <span className="text-xs text-slate-400 truncate">{resumeUrl}</span>
         </div>
-      )}
+        <button
+          onClick={handleReload}
+          className="flex items-center gap-1 px-2 py-1 text-xs rounded-lg bg-surface-800 text-slate-300 hover:bg-surface-700 transition-colors"
+          title="刷新预览"
+        >
+          <RefreshCw size={12} />
+        </button>
+        {filePath && (
+          <span className="hidden lg:flex items-center gap-1 text-[11px] text-slate-500 max-w-[160px] truncate" title={filePath}>
+            <span className="truncate">{filePath.split(/[\\/]/).pop()}</span>
+          </span>
+        )}
+      </div>
 
+      {/* 内置浏览器预览（Electron webview，真实渲染磁盘 HTML 文件） */}
+      <div className="flex-1 min-h-0 relative border border-slate-700/50 rounded-md overflow-hidden bg-white">
+        <webview
+          ref={webviewRef}
+          src={resumeUrl}
+          partition="persist:resume-preview"
+          style={{ width: '100%', height: '100%', display: 'inline-flex' }}
+        />
+      </div>
       <p className="no-print text-[11px] text-slate-600 mt-2 flex items-center gap-1 shrink-0">
         {pickerMode
           ? '🎯 元素选择模式：悬浮高亮，点击拾取元素标签插入对话，ESC退出'
-          : '点击「元素选择」拾取简历模块标签插入AI对话；导出的HTML可直接用浏览器打开或打印为PDF'
+          : '内置浏览器预览：真实渲染简历 HTML，跟随 AI 修改实时刷新；点击「元素选择」拾取简历模块标签插入AI对话'
         }
       </p>
     </div>

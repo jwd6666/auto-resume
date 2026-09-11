@@ -1,6 +1,7 @@
-"""简历 Agent 统一路由模块（合并自 one_jd_one_resume/backend/routers/ 下所有路由）。
+"""简历 Agent 统一路由模块。
 
-所有路由挂载在单个 APIRouter 上，无 /api 前缀；由 main.py 统一加 /agent 前缀。
+路由挂载在单个 APIRouter 上，无 /api 前缀；由 main.py 统一加 /agent 前缀。
+提示词、工具定义、面试题库、对话逻辑已拆分到 agent/ 子包。
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, File, Query, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from docx import Document
@@ -50,703 +51,22 @@ from ..services.resume_workspace import (
     resume_file_path, ensure_resume_file, read_resume_file, write_resume_file,
     delete_resume_dir, get_workspace_manager,
 )
+from .agent.prompts import (
+    SYSTEM_PROMPT, SYSTEM_PROMPT_AGENT, INTERVIEW_SIM_SYSTEM, INTERVIEW_REPORT_SYSTEM,
+    EVAL_SYSTEM_PROMPT, SYSTEM_GENERATE_RESUME, SYSTEM_PARSE_RESUME, SYSTEM_RESTYLE_RESUME,
+)
+from .agent.tools import RESUME_TOOLS, execute_tool as _execute_tool, _list_sections
+from .agent.interview import (
+    BankQuestion, load_question_bank, sample_questionnaire, questionnaire_to_markdown,
+    generate_job_question_dicts, parse_llm_question_list, QUESTION_CATEGORIES,
+    _strip_code_fence,
+)
+from .agent.chat import generate as _generate, stream_sim as _stream_sim
 
 router = APIRouter(tags=["resume-agent"])
 
 # ── 数据文件路径 ──────────────────────────────────────────────
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
-
-
-# ══════════════════════════════════════════════════════════════
-# 面试题库内联（来自 interview_question_bank.py）
-# ══════════════════════════════════════════════════════════════
-
-_BANK_PATH = DATA_DIR / "interview_question_bank.json"
-
-QUESTION_CATEGORIES: List[str] = [
-    "自我介绍",
-    "行为面试",
-    "技术深挖",
-    "情景题",
-    "反向提问",
-    "综合",
-]
-
-ALLOWED_CATEGORIES = frozenset(QUESTION_CATEGORIES)
-
-
-class BankQuestion(BaseModel):
-    id: str
-    category: str
-    text: str
-    tags: List[str] = Field(default_factory=list)
-
-
-class QuestionBankFile(BaseModel):
-    version: int = 1
-    questions: List[BankQuestion]
-
-
-@lru_cache(maxsize=1)
-def load_question_bank() -> List[BankQuestion]:
-    if not _BANK_PATH.exists():
-        return []
-    raw = json.loads(_BANK_PATH.read_text(encoding="utf-8"))
-    doc = QuestionBankFile.model_validate(raw)
-    return doc.questions
-
-
-def _jd_keyword_hits(jd_lower: str, tags: List[str]) -> int:
-    if not tags:
-        return 0
-    hits = 0
-    for t in tags:
-        if t and t.lower() in jd_lower:
-            hits += 1
-    return hits
-
-
-def _weighted_sample_without_replacement(
-    items: List[Tuple[BankQuestion, float]],
-    k: int,
-    rng: random.Random,
-) -> List[BankQuestion]:
-    if k <= 0 or not items:
-        return []
-    pool = list(items)
-    out: List[BankQuestion] = []
-    for _ in range(min(k, len(pool))):
-        total = sum(w for _, w in pool)
-        if total <= 0:
-            i = rng.randrange(len(pool))
-        else:
-            r = rng.uniform(0, total)
-            acc = 0.0
-            i = 0
-            for idx, (_, w) in enumerate(pool):
-                acc += max(w, 0.001)
-                if r <= acc:
-                    i = idx
-                    break
-        out.append(pool[i][0])
-        pool.pop(i)
-    return out
-
-
-def sample_questionnaire(
-    jd_text: str,
-    total: int = 7,
-    seed: Optional[int] = None,
-    max_per_category: int = 2,
-    extra_questions: Optional[List[BankQuestion]] = None,
-    category_filter: Optional[List[str]] = None,
-) -> Tuple[List[BankQuestion], List[str]]:
-    """分层抽样：先尽量每类抽 1 题，再按类上限补足，最后从剩余池补满 total。"""
-    all_q = list(load_question_bank())
-    if extra_questions:
-        all_q.extend(extra_questions)
-    if not all_q:
-        return [], []
-
-    if category_filter:
-        cf = {c.strip() for c in category_filter if c and str(c).strip()}
-        if cf:
-            filtered = [q for q in all_q if q.category in cf]
-            if filtered:
-                all_q = filtered
-
-    rng = random.Random(seed)
-    jd_lower = (jd_text or "").lower()
-
-    by_cat: defaultdict[str, list[BankQuestion]] = defaultdict(list)
-    for q in all_q:
-        by_cat[q.category].append(q)
-
-    categories = list(by_cat.keys())
-    rng.shuffle(categories)
-
-    picked: List[BankQuestion] = []
-    picked_ids: set[str] = set()
-
-    def weight_pool(pool: List[BankQuestion]) -> List[Tuple[BankQuestion, float]]:
-        out: List[Tuple[BankQuestion, float]] = []
-        for q in pool:
-            w = 1.0 + 0.35 * _jd_keyword_hits(jd_lower, q.tags)
-            if q.id.startswith("jobq-"):
-                w *= 1.4
-            out.append((q, w))
-        return out
-
-    for cat in categories:
-        if len(picked) >= total:
-            break
-        pool = [q for q in by_cat[cat] if q.id not in picked_ids]
-        if not pool:
-            continue
-        one = _weighted_sample_without_replacement(weight_pool(pool), 1, rng)
-        if one:
-            picked.append(one[0])
-            picked_ids.add(one[0].id)
-
-    for cat in categories:
-        while len(picked) < total:
-            n_cat = sum(1 for x in picked if x.category == cat)
-            if n_cat >= max_per_category:
-                break
-            pool = [q for q in by_cat[cat] if q.id not in picked_ids]
-            if not pool:
-                break
-            one = _weighted_sample_without_replacement(weight_pool(pool), 1, rng)
-            if not one:
-                break
-            picked.append(one[0])
-            picked_ids.add(one[0].id)
-
-    rest = [q for q in all_q if q.id not in picked_ids]
-    rng.shuffle(rest)
-    weighted_rest = weight_pool(rest)
-    need = total - len(picked)
-    if need > 0 and weighted_rest:
-        extra = _weighted_sample_without_replacement(weighted_rest, min(need, len(weighted_rest)), rng)
-        picked.extend(extra)
-        for q in extra:
-            picked_ids.add(q.id)
-
-    if len(picked) > total:
-        picked = rng.sample(picked, total)
-
-    used_cats: List[str] = []
-    seen: set[str] = set()
-    for q in picked:
-        if q.category not in seen:
-            seen.add(q.category)
-            used_cats.append(q.category)
-
-    return picked, used_cats
-
-
-def questionnaire_to_markdown(items: List[BankQuestion]) -> str:
-    lines = [
-        "## 本场须覆盖的题单（按序自然推进，可追问；不必一字不差复述题干）",
-        "",
-    ]
-    for i, q in enumerate(items, start=1):
-        lines.append(f"{i}. **【{q.category}】** {q.text}")
-    return "\n".join(lines)
-
-
-# ══════════════════════════════════════════════════════════════
-# 面试题库 LLM 生成（来自 interview_bank_llm.py）
-# ══════════════════════════════════════════════════════════════
-
-GENERATE_BANK_SYSTEM = (
-    """# 角色
-你是资深招聘与面试设计顾问，擅长根据岗位 JD 与候选人简历（以及可选的背景补充）设计高信噪比的面试问题。
-
-# 任务
-基于系统消息里提供的：岗位 JD、候选人简历全文、以及可选补充经历，输出一个 JSON 数组，用于「模拟面试」题库。
-不要输出任何 JSON 以外的文字。
-
-# JSON 格式
-数组中每个元素为对象，仅含两个字符串字段：
-- category：必须是以下之一（严格一致）：
-"""
-    + "、".join(QUESTION_CATEGORIES)
-    + """
-- text：口语化、适合现场追问的一句或一小段面试问题（中文）
-
-# 要求
-- 共 14～18 道题，类别尽量覆盖全面，且紧扣 JD 中的重点，同时优先围绕候选人简历里"已经出现"的经历与表述去设计问题。
-- 不要重复题干；不要编造简历中没有的事实细节作为前提。
-- 题目文本不要出现"《JD》/《简历》"等字样；直接给可问的问题本身。
-- 禁止出现歧视性、违法违规或侵犯隐私的问题（如年龄、婚育、民族、宗教、性取向等受保护属性）。
-- 禁止 Markdown 代码块包裹，禁止注释。"""
-)
-
-
-def _strip_code_fence(s: str) -> str:
-    s = (s or "").strip()
-    if s.startswith("```"):
-        s = re.sub(r"^```(?:html|json|xml)?\s*", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\s*```\s*$", "", s)
-    s = s.strip()
-    doctype_pos = s.lower().find("<!doctype")
-    html_pos = s.lower().find("<html")
-    if doctype_pos >= 0 or html_pos >= 0:
-        start = doctype_pos if doctype_pos >= 0 else html_pos
-        if html_pos >= 0 and html_pos < start:
-            start = html_pos
-        s = s[start:]
-    close_pos = s.lower().rfind("</html>")
-    if close_pos >= 0:
-        s = s[:close_pos + len("</html>")]
-    return s.strip()
-
-
-
-
-
-def parse_llm_question_list(raw: str) -> List[dict]:
-    """解析 LLM 返回的 JSON 数组。"""
-    s = _strip_code_fence(raw)
-    data = json.loads(s)
-    if not isinstance(data, list):
-        raise ValueError("expected JSON array")
-    out: List[dict] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        cat = str(item.get("category", "")).strip()
-        text = str(item.get("text", "")).strip()
-        if not text:
-            continue
-        if cat not in ALLOWED_CATEGORIES:
-            cat = "综合"
-        out.append({"category": cat, "text": text})
-    return out
-
-
-async def generate_job_question_dicts(
-    job_content: str,
-    resume_content: str,
-    user_background: Optional[str] = None,
-) -> List[Dict[str, str]]:
-    jd = (job_content or "").strip() or "（JD 为空，请输出通用职场面试题）"
-    resume = (resume_content or "").strip() or "（简历为空，请输出通用职场面试问题）"
-
-    parts = [f"## 岗位 JD\n\n{jd}", f"## 候选人简历\n\n{resume}"]
-    if user_background:
-        parts.append(f"## 候选人补充经历\n\n{user_background}")
-    context = "\n\n---\n\n".join(parts)
-
-    user_msg = f"{context}\n\n请输出符合要求的 JSON 数组。"
-    raw = await complete_response(
-        GENERATE_BANK_SYSTEM,
-        [{"role": "user", "content": user_msg}],
-    )
-    return parse_llm_question_list(raw)
-
-
-# ══════════════════════════════════════════════════════════════
-# AI 工具定义（OpenAI function calling 格式）
-# ══════════════════════════════════════════════════════════════
-
-RESUME_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "读取简历 HTML 文件的完整内容。当你需要查看当前简历的完整 HTML 来定位修改位置时调用。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "文件路径（由系统提供）",
-                    },
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": "将完整内容写入简历 HTML 文件。修改简历时调用此工具，写入修改后的完整 HTML。写入后前端会自动刷新预览。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "文件路径（由系统提供）",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "要写入的完整 HTML 内容",
-                    },
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-]
-
-
-def _execute_tool(name: str, arguments: dict, resume_id: int) -> str:
-    """执行 AI 工具调用，返回结果字符串。"""
-    if arguments is None:
-        return f"工具调用参数解析失败，请重新调用 {name} 工具，确保参数是合法 JSON。"
-
-    if name == "read_file":
-        content = read_resume_file(resume_id)
-        return content if content else "(文件为空或不存在)"
-    elif name == "write_file":
-        content = arguments.get("content", "")
-        if not content or not content.strip():
-            return "写入失败：content 参数为空。请重新调用 write_file，确保传入完整的 HTML 内容。"
-        write_resume_file(resume_id, content)
-        # 同步更新数据库（持久化）
-        if resume_id:
-            try:
-                from ..services.resume_db import SessionLocal
-                db = SessionLocal()
-                try:
-                    db_resume = db.query(models.Resume).filter(models.Resume.id == resume_id).first()
-                    if db_resume:
-                        db_resume.rendered_html = content
-                        db.commit()
-                finally:
-                    db.close()
-            except Exception:
-                pass  # DB 同步失败不影响文件写入
-        return f"文件已写入，共 {len(content)} 字符。前端预览将自动刷新。"
-    else:
-        return f"未知工具: {name}"
-
-
-# ══════════════════════════════════════════════════════════════
-# 系统提示词
-# ══════════════════════════════════════════════════════════════
-
-SYSTEM_PROMPT_AGENT = """# 角色
-
-你是一位拥有 10 年以上经验的资深职业规划师和简历顾问，同时你是简历编辑器的直接操控者。你可以不仅给出建议，还能直接修改用户的简历HTML。
-
----
-
-# 核心能力：通过工具直接读写简历文件
-
-你拥有两个工具来操作简历 HTML 文件：
-
-## 工具说明
-
-1. **read_file** — 读取简历 HTML 文件的完整内容
-2. **write_file** — 将修改后的完整 HTML 写入简历文件，写入后前端预览自动刷新
-
-## 工作流程
-
-1. 用户描述修改需求（如「字体调小」「改主题色」「润色工作经历要点」）
-2. 你先用 **read_file** 读取当前文件内容（或参考上下文中已提供的简历 HTML）
-3. 基于需求修改 HTML，用 **write_file** 写入修改后的完整文件内容
-4. 向用户简要说明你做了哪些修改
-
----
-
-# ⛔ 工具调用铁律（违反将导致任务失败，必须严格遵守）
-
-1. **必须通过 tool_calls 调用工具**。read_file/write_file 只能通过 API 的 tool_calls 结构体发起，禁止在回复文本中用自然语言描述工具调用（如"我将调用read_file"）。
-2. **禁止伪调用**。不得在文本中声称已读取/写入文件、声称已执行工具操作。如果没有发起 tool_calls，等于没有调用。
-3. **禁止自行编造文件内容**。必须等待 read_file 返回真实文件内容后，才能修改简历HTML。上下文中已提供的简历HTML除外。
-4. **禁止输出 ===HTML_PATCH===**。HTML_PATCH 是旧版降级方案，当前系统支持工具调用，严禁使用。
-5. **修改简历必须调用 write_file**。任何对简历的修改都必须通过 write_file 工具写入文件，不存在其他修改方式。
-6. **如果无法生成合法 tool_calls**，直接告知用户"当前无法调用工具"，不要假装已执行。
-
----
-
-# 简历修改规则
-
-- write_file 必须写入**完整的 HTML 文件内容**，不能只写局部片段
-- 简历HTML中每个业务模块都带 `data-resume-section` 属性，修改时必须保留该属性
-- 修改样式时，修改 `<style>` 标签内的 CSS
-- CSS 全部放在内部 `<style>` 标签中，使用 `--accent` CSS 变量控制主题色
-- 常用 CSS 选择器：整页字号/行高、姓名、章节标题（h2）、公司名、职位、日期、要点列表项（li）、个人简介、技能分类
-- 先简要说明修改思路，再调用 write_file
-- 信息可以根据JD润色，基于真实经历优化表述
-
-## 分页防断规则（修改打印样式时必须遵守）
-
-- `break-inside: avoid` / `page-break-inside: avoid` 只能应用于**细粒度元素**：`header`、`.item-block`（单条经历条目）、`.skill-group`、`.cert-item`
-- **禁止**对 `.resume-section`、`section`、`.page`、`.resume-wrap` 等大容器设置 `break-inside: avoid`
-- 如果单个 `.item-block` 太长超过半页，应移除其 `break-inside: avoid`
-
----
-
-# 其他能力
-
-## 简历诊断
-- 与 JD 匹配度评分及差距分析
-- 关键词覆盖率
-- 亮点不足或表述模糊的经历
-
-## 面试辅导
-- 预测考察题目，给出回答框架
-
----
-
-# 行为准则
-
-1. 信息可以根据JD润色优化
-2. 主动追问缺失信息
-3. 中文优先
-4. 聚焦当前JD
-5. 修改简历必须调用 write_file 工具
-6. 禁止基于受保护属性进行价值判断
-"""
-
-SYSTEM_PROMPT = SYSTEM_PROMPT_AGENT
-
-
-INTERVIEW_SIM_SYSTEM = """# 角色
-
-你是目标企业的**现场面试官**（技术/业务负责人或 HR 之一，与岗位匹配）。你正在与候选人进行**真实面试**，不是职业规划师，也不是教练。
-
-# 输入上下文
-
-系统消息中会提供：岗位 JD、候选人简历全文、以及可选的补充经历。请紧扣 JD 与简历提问与追问。
-
-# 输出格式（必须严格遵守）
-
-每一次回复都必须**恰好**包含下面两个区块，顺序固定，且使用下列标记行（不要省略标记）：
-
-<<<REACTION>>>
-（1～2 句中文：**仅**描述可观察的外在反应，如神情、停顿、记笔记、语气。禁止写内心打分、禁止写「我觉得你不行」等直白评价、禁止剧透后续考察重点。）
-<<<SPEECH>>>
-（面试官**口语化**的发言：开场白、过渡、或追问。可包含 1 个问题或一组连贯追问。）
-
-# 行为准则
-
-1. 语言自然、简洁，像真人对话，避免条目式讲义。
-2. 根据候选人上一轮回答决定是深入追问还是换题；不要一次抛出过多无关问题。
-3. 不要输出简历标记协议（如 ===RESUME_START===），不要替候选人写答案。
-4. 全程中文，除非 JD 明确要求英文面试。
-
-# 题单模式（当上下文中包含「本场须覆盖的题单」时生效）
-
-5. **须按题单推进**：优先覆盖题单中的大题，按大致顺序自然过渡；可用口语转述，不必一字不差背题干。
-6. **追问与换题**：每一大题下可结合简历与 JD 深入追问；若候选人明显卡壳，可给提示后换角度，但不要长时间偏离题单去全新发散无关大类。
-7. **进度感**：在适当时机可简短过渡到下一题（不必声明题号），使整场像在真实面试中有节奏地走完计划。
-8. **合规与反歧视**：禁止提出或暗示年龄、婚育、性别、民族、宗教、地域、残障等歧视性问题；若用户主动提及，需回到岗位胜任力与行为证据。"""
-
-
-INTERVIEW_REPORT_SYSTEM = """# 角色
-
-你是资深**面试教练**。你已拿到：岗位 JD、候选人简历、整场模拟面试的对话记录。面试已结束，候选人需要**复盘与提升**。
-
-# 任务
-
-输出一份**Markdown 格式**的整合报告，结构建议如下（可按内容微调标题，但必须清晰）：
-
-1. **总评**：整体印象、与 JD 匹配度相关的要点（2～4 段即可）。
-2. **亮点**：候选人表现得好的地方（结合具体轮次）。
-3. **待加强**：表达、结构、深度、例证等方面的不足（结合具体轮次）。
-4. **分题改进建议**：按对话中出现的典型问题，给出「更好的回答思路或示例要点」（用 STAR 等框架时可简要说明）。
-5. **后续可练习**：建议候选人自己再准备的追问方向或模拟题。
-
-# 约束
-
-- 基于对话与简历事实，不要虚构候选人没说过的事迹。
-- 语气专业、建设性，避免人身攻击。
-- 全程中文。"""
-
-
-EVAL_SYSTEM_PROMPT = """你是资深 HRBP 与招聘评估官。请输出结构化 JSON 评分卡，且每个结论都必须给证据引用。
-
-输出 JSON 对象字段：
-- overall_score: 0-100 整数
-- overall_summary: 字符串
-- items: 数组，每项包含
-  - competency: 能力项名称
-  - score: 0-100 整数
-  - confidence: 高/中/低
-  - summary: 结论摘要
-  - evidence: 数组，每项包含 source(可选: JD/简历/对话), quote(证据原文), why(为什么能支持结论)
-  - gap: 能力差距（可选）
-  - suggestion: 改进建议（可选）
-- needs_verification: 数组，列出证据不足、需要候选人继续验证的点
-
-严格要求：
-1) 不得输出 JSON 之外内容。
-2) 若证据不足，不要臆断，写入 needs_verification。
-3) 不能出现歧视性判断，不涉及年龄、婚育、民族、宗教等受保护属性。
-"""
-
-
-SYSTEM_GENERATE_RESUME = """# 角色
-你是一位拥有 10 年以上经验的资深职业规划师和简历撰写专家。根据候选人提供的个人信息和目标岗位 JD，直接生成一份完整的、可用的简历 HTML 文件。
-
-生成一份 A4 尺寸、可直接打印的个人简历 HTML 页面（内联样式，单文件），要求如下：
-
-【整体布局】
-- 左右双栏布局，左栏宽度 30%，背景色 #4A5F7A（深蓝灰），文字白色；右栏宽度 70%，白色背景，深灰文字 #333
-- 左栏从上到下依次排列：圆形头像、姓名、求职意向、分割线、个人信息、教育背景（简版）、技能证书、荣誉奖项
-- 右栏从上到下依次排列：教育背景（详版）、工作经历、项目经历、自我评价
-- 每个模块标题前加对应图标（可用 emoji 或 Unicode 符号），标题下方加一条细横线
-
-【配色与字体】
-- 主色调：深蓝灰 #4A5F7A，左栏背景；模块标题、分割线用同色系
-- 字体：无衬线字体（PingFang SC / Microsoft YaHei / sans-serif）
-- 姓名：24px 加粗白色；求职意向：14px 浅灰；模块标题：16px 加粗；正文：13px
-- 行间距 1.6
-
-【防溢出与打印 — 最高优先级，违反则视为不合格】
-1. 页面固定为 A4 尺寸：width: 210mm; height: 297mm; overflow: hidden。内容必须严格限制在这一页内，绝对不允许出现第二页。
-2. 左栏和右栏都使用普通文档流（block 布局），从上到下依次排列。禁止使用 flex + margin-top: auto、position: absolute、bottom: 0 等任何把元素"推到容器底部"的写法。每个模块紧跟在上一个模块后面，间距用固定 margin 值（如 margin-bottom: 18px）。
-3. 生成前先估算内容总高度。如果左栏内容可能超出 297mm - 上下padding，必须主动压缩：减少荣誉奖项条目（最多保留 4 条）、技能标签精简、模块间距从 25px 降到 15px、正文字号从 13px 降到 12px。压缩后仍超就继续删减，直到一页装得下。
-4. 右栏同理：工作经历最多 2 段，每段 3-4 条 bullet；项目经历最多 2 段，每段 2-3 条 bullet。超了就合并或删减，优先保留最近的、量化成果最突出的。
-5. @media print 规则必须包含：body { margin: 0; } .page { margin: 0; box-shadow: none; width: 210mm; height: 297mm; overflow: hidden; }，并设置 -webkit-print-color-adjust: exact 和 print-color-adjust: exact 确保背景色打印出来。
-6. 打印缩放时，所有间距和字号按比例整体缩放，模块之间的相对位置保持不变，不会出现某个模块突然跳到另一页。
-
-【个人信息】
-优先使用用户提供的信息，未提供则用默认值：
-- 姓名：【你的姓名】
-- 求职意向：【目标岗位】
-- 出生年月：【1998.06】
-- 性别：【女】
-- 电话：【188-8888-8888】
-- 邮箱：your@email.com
-- 所在地：【上海市浦东新区】
-
-【教育背景】
-- 时间：【2016.09 - 2020.06】
-- 学校：【复旦大学】
-- 学院/专业：【管理学院 · 信息管理与信息系统 本科】
-- 主修课程：【管理学、运筹学、数据库原理、数据结构、市场营销、统计学、系统分析与设计、用户体验设计等】
-- GPA：【3.7/4.0（专业前10%）】
-
-【工作经历】
-按时间倒序，最多 2 段。每段包含：时间段、公司名、职位、3-4 条 bullet，描述尽量量化成果。
-1. 【2021.07 - 至今】【上海某某互联网科技有限公司】【产品经理】
-   - 负责公司核心产品的需求调研、分析与管理，深入理解用户需求，输出需求文档和原型设计
-   - 与设计、开发、测试等团队紧密协作，推动产品功能迭代，优化用户体验
-   - 通过数据分析与用户反馈，持续优化产品功能，提升产品活跃度与用户留存率
-   - 主导产品从 0 到 1 的功能模块设计，成功上线 3 个重要版本，用户满意度提升 20%
-2. 【2020.07 - 2021.06】【杭州某某科技有限公司】【产品助理】
-   - 协助产品经理进行市场调研、竞品分析及用户需求收集，撰写需求说明文档
-   - 参与产品原型设计与流程梳理，跟踪开发进度，协助完成产品上线与迭代
-   - 整理产品数据，制作数据报表，为产品优化提供数据支持
-
-【项目经历】
-最多 2 段。每段包含：时间段、项目名、角色、2-3 条 bullet，突出量化成果。
-1. 【2022.03 - 2022.08】【在线教育平台 - 课程学习模块优化项目】【项目负责人】
-   - 通过用户调研与数据分析，发现课程学习路径不清晰问题，提出优化方案
-   - 设计学习路径推荐算法，优化课程详情页与学习流程，提升用户学习效率
-   - 项目上线后，课程完成率提升 15%，用户好评率提升 18%
-2. 【2021.01 - 2021.05】【电商小程序 - 新用户增长项目】【核心成员】
-   - 负责新用户增长策略设计，策划并落地新人优惠、分享裂变等活动
-   - 通过活动运营与数据监控，优化活动规则与用户体验
-   - 项目期间新增用户增长 30%，转化率提升 12%
-
-【技能证书】
-- 专业技能：Axure、XMind、Visio；SQL、Excel（数据透视表、函数）；墨刀、Figma；SPSS、Tableau（基础）
-- 语言能力：大学英语六级（CET-6）；普通话二级甲等
-
-【荣誉奖项】
-最多保留 4 条，按重要性排序：
-- 2018-2019 学年优秀学生奖学金
-- 2019 年互联网+创新创业大赛省级银奖
-- 2020 届优秀毕业生
-
-【自我评价】
-具备 2 年+ 产品相关工作经验，熟悉产品从需求分析到上线迭代的全流程。逻辑清晰，数据敏感，善于从用户和业务视角思考问题并推动解决方案落地。沟通协作能力强，责任心强，具备良好的学习能力与抗压能力。
-
-【其他要求】
-- 头像位置预留一个圆形占位框（直径约 100px），后续自行替换图片
-- 输出完整的单文件 HTML 代码，样式全部写在 <style> 中，不依赖外部 CSS/JS/字体
-- 不要输出任何解释文字，直接输出 HTML 代码
-
-"""
-
-
-SYSTEM_PARSE_RESUME = """你是简历信息提取助手。用户将提供从简历文件中提取的原始内容（可能是文本、图片描述、或混合内容），请从中提取出结构化信息。
-
-输出严格 JSON 对象（不要 markdown 代码块、不要注释、不要 JSON 之外的任何文字），schema：
-{
-  "name": "姓名",
-  "contact": "联系方式（手机/邮箱/地址等，用 | 分隔）",
-  "summary": "个人简介/自我评价",
-  "experience": [{"company": "公司名", "role": "岗位", "start": "开始时间", "end": "结束时间", "highlights": ["工作要点1", "工作要点2"]}],
-  "projects": [{"name": "项目名", "role": "角色", "start": "开始时间", "end": "结束时间", "description": "项目描述", "highlights": ["项目要点1"]}],
-  "education": [{"school": "学校名", "major": "专业", "degree": "学历", "start": "开始时间", "end": "结束时间", "highlights": []}],
-  "skills": [{"category": "分类名", "items": ["技能1", "技能2"]}],
-  "extras": [{"title": "荣誉/奖项/证书", "items": ["条目1"]}]
-}
-
-规则：
-- 识别失败的字段赋值为空字符串或空数组，禁止丢失时间、岗位、项目描述等关键信息
-- start/end 格式 "2023.06"，在职/在读用 "至今"；不完整就留空字符串
-- highlights 为该经历的要点句数组，保留原量化数据、技术栈、成果，不编造
-- 按时间倒序排列经历
-- 中文优先"""
-
-
-SYSTEM_RESTYLE_RESUME = """# 角色
-你是一位资深简历排版设计师。根据用户提供的简历内容和风格要求，重新排版生成完整的简历 HTML。
-
-# 输入
-- 用户的简历原始信息（结构化或纯文本）
-- 目标风格（从4种预设中选择）
-- 主题色（CSS变量 --accent 的值）
-- 用户补充描述（可选）
-- 参考风格图片（可选，模仿其排版风格）
-
-# 风格模板定义
-
-## classic — 经典双栏
-- 左右双栏布局，左栏 30%，背景色使用主题色加深版（如主题色为蓝色则用 #4A5F7A 深蓝灰），文字白色
-- 左栏从上到下：圆形头像（直径约 100px）、姓名（24px 加粗白色）、求职意向（14px 浅灰）、分割线、个人信息、教育背景（简版）、技能证书、荣誉奖项
-- 右栏 70%，白色背景，深灰文字 #333：教育背景（详版）、工作经历、项目经历、自我评价
-- 模块标题前加 emoji 图标，标题下方细横线
-- 正文 13px，行间距 1.6
-
-## modern — 现代简约
-- 全白背景，左侧 4px 主题色竖条装饰
-- 单栏布局，内容居中 max-width: 180mm，padding: 15mm 20mm
-- 姓名大号居中（22px），下方主题色横线分割
-- 模块间留白大（20px），标题用主题色 + 小号英文副标签（如 EXPERIENCE）
-- 整体简洁专业，无深色背景区域
-- 正文 12px，行间距 1.7
-
-## minimal — 极清单栏
-- 单栏居中，max-width: 160mm，大量留白，padding: 20mm
-- 姓名居中（20px），下方仅一条细主题色短线（宽 40mm）
-- 无图标、无背景色块、无侧边栏、无分割线
-- 模块标题仅用主题色文字 + 下方 1px 浅灰线
-- 字号偏小（12px 正文），行距宽松（1.8）
-- 技能用逗号分隔文本，不用标签/徽章
-- 联系方式一行排列，用 | 分隔
-
-## creative — 创意侧边栏
-- 顶部全幅主题色色带（高度约 80mm）：白色大号姓名（28px）+ 求职意向（16px）
-- 下方双栏：左 40%（浅灰背景 #f5f5f5）放技能/荣誉/教育，右 60%（白色）放工作/项目/评价
-- 头像嵌入色带右侧，圆形带白色边框
-- 模块标题用深色小号加粗 + 2px 主题色左竖条装饰
-- 正文 12px，行间距 1.6
-
-# 【防溢出与打印 — 最高优先级，违反则视为不合格】
-1. 页面固定为 A4 尺寸：width: 210mm; height: 297mm; overflow: hidden。内容必须严格限制在这一页内，绝对不允许出现第二页。
-2. 左栏和右栏都使用普通文档流（block 布局），从上到下依次排列。禁止使用 flex + margin-top: auto、position: absolute、bottom: 0 等任何把元素"推到容器底部"的写法。每个模块紧跟在上一个模块后面，间距用固定 margin 值（如 margin-bottom: 18px）。
-3. 生成前先估算内容总高度。如果左栏内容可能超出 297mm - 上下padding，必须主动压缩：减少荣誉奖项条目（最多保留 4 条）、技能标签精简、模块间距从 25px 降到 15px、正文字号从 13px 降到 12px。压缩后仍超就继续删减，直到一页装得下。
-4. 右栏同理：工作经历最多 2 段，每段 3-4 条 bullet；项目经历最多 2 段，每段 2-3 条 bullet。超了就合并或删减，优先保留最近的、量化成果最突出的。
-5. @media print 规则必须包含：body { margin: 0; } .page { margin: 0; box-shadow: none; width: 210mm; height: 297mm; overflow: hidden; }，并设置 -webkit-print-color-adjust: exact 和 print-color-adjust: exact 确保背景色打印出来。
-6. 打印缩放时，所有间距和字号按比例整体缩放，模块之间的相对位置保持不变，不会出现某个模块突然跳到另一页。
-
-# 配色与字体
-- 主题色使用 CSS 变量 --accent，值为用户指定的颜色
-- 字体：PingFang SC / Microsoft YaHei / sans-serif
-- 各风格的具体字号/行距见上方模板定义
-
-# 头像处理
-- 如果用户提供了头像（base64），在 HTML 中用 <img src="data:image/xxx;base64,..."> 嵌入
-- 头像位置和样式根据所选风格模板定义
-- 如果未提供头像，预留圆形占位框（直径约 100px，浅灰边框，浅灰背景，中间灰色人形图标或文字"头像"）
-
-# 参考图处理
-- 如果用户提供了参考风格图，请分析其排版风格（布局方式、配色、间距、装饰元素），在遵循所选预设风格的基础上融入参考图的风格元素
-- 参考图仅作风格参考，不要复制其内容
-
-# HTML 结构要求
-- 输出完整的单文件 HTML，样式全部写在 <style> 中，不依赖外部 CSS/JS/字体
-- 不要输出任何解释文字，直接输出 HTML 代码
-- HTML 中每个业务模块必须带 data-resume-section 属性：
-  - basics：头部姓名/意向/联系方式区
-  - intro：个人简介
-  - work：工作经历整体
-  - project：项目经历整体
-  - edu：教育经历整体
-  - skill：专业技能
-  - page-style：页面样式（<style> 标签）
-- 不使用外部图片（除用户头像外），图标用 emoji 或 Unicode 符号"""
 
 
 class GenerateResumeRequest(BaseModel):
@@ -786,177 +106,8 @@ def _build_resume_title_with_angle(db_job: models.Job, title: Optional[str], ang
 
 
 # ══════════════════════════════════════════════════════════════
-# Chat 流式辅助
-# ══════════════════════════════════════════════════════════════
-
-async def _generate(
-    job_content: str,
-    resume_content: str,
-    messages: list,
-    user_background: str = None,
-    resume_structured: str = None,
-    resume_rendered_html: str = None,
-    resume_id: int = None,
-):
-    file_path = ensure_resume_file(resume_id, resume_rendered_html) if resume_id else None
-
-    context_parts = [f"## 目标岗位信息\n\n{job_content}"]
-    if resume_content:
-        context_parts.append(f"## 当前简历文本\n\n{resume_content}")
-    if user_background:
-        context_parts.append(f"## 用户补充的个人经历\n\n{user_background}")
-    if file_path:
-        context_parts.append(f"## 简历文件路径\n\n{file_path}\n（使用 write_file 工具写入此路径来修改简历；完整HTML简历内容必须调用read_file工具读取磁盘文件获取）")
-
-    context = "\n\n---\n\n".join(context_parts)
-    system_with_context = f"{SYSTEM_PROMPT}\n\n---\n\n{context}"
-
-    def _build_message_content(msg: dict):
-        role = msg.get("role", "")
-        text = msg.get("content", "")
-        images = msg.get("images") or []
-
-        if images and role == "user":
-            content_parts = []
-            for img in images:
-                content_parts.append({"type": "image_url", "image_url": {"url": img}})
-            if text:
-                content_parts.append({"type": "text", "text": text})
-            return content_parts
-        return text
-
-    api_messages = [{"role": m["role"], "content": _build_message_content(m)} for m in messages]
-
-    _FAKE_CALL_PATTERNS = [
-        r"我将(?:调用|使用|执行|运行)\s*(?:read_file|write_file)",
-        r"让我(?:先|来)?(?:调用|使用|执行|运行)\s*(?:read_file|write_file)",
-        r"(?:正在|现在|接下来)?(?:调用|使用|执行|运行)\s*(?:read_file|write_file)",
-        r"(?:read_file|write_file)\s*(?:来|去|以)",
-        r"我(?:已经|已|将)?(?:读取|写入|修改|保存)了?(?:文件|简历)",
-    ]
-
-    def _detect_fake_tool_call(text: str) -> bool:
-        import re
-        for pat in _FAKE_CALL_PATTERNS:
-            if re.search(pat, text):
-                return True
-        if "===HTML_PATCH===" in text:
-            return True
-        return False
-
-    def _needs_tool_use(text: str) -> bool:
-        edit_keywords = ["修改", "调整", "润色", "优化", "改", "换", "删", "添加", "增加",
-                         "修改简历", "改简历", "修改样式", "改颜色", "调字号", "改排版",
-                         "write_file", "read_file", "写入", "读取", "更新简历", "更新HTML"]
-        return any(kw in text for kw in edit_keywords)
-
-    def _last_user_message() -> str:
-        for m in reversed(messages):
-            if m.get("role") == "user":
-                c = m.get("content", "")
-                return c if isinstance(c, str) else ""
-        return ""
-
-    MAX_TOOL_ROUNDS = 10
-
-    try:
-        for _round in range(MAX_TOOL_ROUNDS):
-            round_text = ""
-            tool_calls_received = None
-
-            user_msg = _last_user_message()
-            force_tool = bool(file_path) and _round == 0 and _needs_tool_use(user_msg) and "===HTML_PATCH===" not in user_msg
-            choice = "required" if force_tool else "auto"
-
-            async for event in stream_with_tools(system_with_context, api_messages, RESUME_TOOLS, tool_choice=choice):
-                etype = event.get("type")
-                if etype == "text":
-                    chunk = event["content"]
-                    round_text += chunk
-                    yield f"data: {json.dumps({'type': 'text', 'content': chunk})}\n\n"
-                elif etype == "tool_calls":
-                    tool_calls_received = event["calls"]
-
-            if not tool_calls_received:
-                if _round == 0 and force_tool and _detect_fake_tool_call(round_text):
-                    yield f"data: {json.dumps({'type': 'error', 'content': '⚠️ 检测到伪工具调用：模型用文本描述了工具操作但未实际调用。请重试，系统将强制要求工具调用。'}, ensure_ascii=False)}\n\n"
-                    api_messages.append({"role": "assistant", "content": round_text})
-                    api_messages.append({"role": "user", "content": "你刚才用文本描述了工具操作但没有实际发起tool_calls调用。这是违规的。请直接通过tool_calls调用read_file或write_file工具，不要在回复文本中描述工具操作。"})
-                    continue
-
-                if _round == 0 and force_tool and not round_text.strip():
-                    api_messages.append({"role": "user", "content": "请调用工具来修改简历文件，不要只用文字回复。"})
-                    continue
-
-                break
-
-            assistant_msg: dict = {"role": "assistant", "content": round_text or ""}
-            assistant_msg["tool_calls"] = [
-                {
-                    "id": c["id"],
-                    "type": "function",
-                    "function": {
-                        "name": c["name"],
-                        "arguments": c.get("raw_arguments") or json.dumps(c["arguments"], ensure_ascii=False),
-                    },
-                }
-                for c in tool_calls_received
-            ]
-            api_messages.append(assistant_msg)
-
-            for call in tool_calls_received:
-                arg_preview = call["arguments"].copy() if isinstance(call["arguments"], dict) else {}
-                if "content" in arg_preview and len(str(arg_preview["content"])) > 200:
-                    arg_preview["content"] = str(arg_preview["content"])[:200] + "..."
-                yield f"data: {json.dumps({'type': 'tool_call', 'name': call['name'], 'arguments': arg_preview}, ensure_ascii=False)}\n\n"
-
-                result = _execute_tool(call["name"], call["arguments"], resume_id)
-
-                result_preview = result[:500] + "..." if len(result) > 500 else result
-                yield f"data: {json.dumps({'type': 'tool_result', 'name': call['name'], 'result': result_preview}, ensure_ascii=False)}\n\n"
-
-                api_messages.append({
-                    "role": "tool",
-                    "tool_call_id": call["id"],
-                    "content": result,
-                })
-
-    except Exception as e:
-        yield f"data: {json.dumps({'type': 'error', 'content': f'模型输出中断: {str(e)[:300]}'})}\n\n"
-        return
-
-    yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-
-# ══════════════════════════════════════════════════════════════
 # 面试模拟辅助
 # ══════════════════════════════════════════════════════════════
-
-async def _stream_sim(
-    job_content: str,
-    resume_content: str,
-    messages: list,
-    user_background: Optional[str],
-    questionnaire_markdown: Optional[str] = None,
-):
-    context_parts = [f"## 目标岗位 JD\n\n{job_content}"]
-    if resume_content:
-        context_parts.append(f"## 候选人简历\n\n{resume_content}")
-    if user_background:
-        context_parts.append(f"## 候选人补充经历\n\n{user_background}")
-    if questionnaire_markdown and questionnaire_markdown.strip():
-        context_parts.append(questionnaire_markdown.strip())
-    context = "\n\n---\n\n".join(context_parts)
-    system = f"{INTERVIEW_SIM_SYSTEM}\n\n---\n\n{context}"
-
-    api_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
-    try:
-        async for text in stream_response(system, api_messages):
-            yield f"data: {json.dumps({'type': 'text', 'content': text})}\n\n"
-    except Exception as e:
-        yield f"data: {json.dumps({'type': 'error', 'content': f'模型输出中断: {str(e)[:300]}'})}\n\n"
-        return
-    yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
 
 def _db_job_questions_as_bank(
@@ -1650,10 +801,11 @@ async def generate_resume(body: GenerateResumeRequest, db: Session = Depends(get
         raise HTTPException(status_code=400, detail="岗位 JD 为空，无法生成简历")
 
     background = (body.background or "").strip()
-    if not background:
-        raise HTTPException(status_code=400, detail="请提供候选人背景信息")
-
-    user_msg = f"## 目标岗位 JD\n\n{jd}\n\n---\n\n## 候选人背景信息\n\n{background}"
+    user_msg = f"## 目标岗位 JD\n\n{jd}"
+    if background:
+        user_msg += f"\n\n---\n\n## 候选人背景信息\n\n{background}"
+    else:
+        user_msg += "\n\n---\n\n## 候选人背景信息\n\n（用户未提供候选人背景，请基于目标岗位 JD 生成一份完整的简历模板，姓名、联系方式等字段用合理的占位信息填充。）"
     accent = body.accent if body.accent in ACCENTS else "#2563eb"
     user_msg += f"\n\n---\n\n请使用主题色 {accent}，生成一份完整简历 HTML。"
 
@@ -1700,10 +852,11 @@ async def generate_resume_stream(body: GenerateResumeRequest, db: Session = Depe
         raise HTTPException(status_code=400, detail="岗位 JD 为空，无法生成简历")
 
     background = (body.background or "").strip()
-    if not background:
-        raise HTTPException(status_code=400, detail="请提供候选人背景信息")
-
-    user_msg = f"## 目标岗位 JD\n\n{jd}\n\n---\n\n## 候选人背景信息\n\n{background}"
+    user_msg = f"## 目标岗位 JD\n\n{jd}"
+    if background:
+        user_msg += f"\n\n---\n\n## 候选人背景信息\n\n{background}"
+    else:
+        user_msg += "\n\n---\n\n## 候选人背景信息\n\n（用户未提供候选人背景，请基于目标岗位 JD 生成一份完整的简历模板，姓名、联系方式等字段用合理的占位信息填充。）"
     accent = body.accent if body.accent in ACCENTS else "#2563eb"
     user_msg += f"\n\n---\n\n请使用主题色 {accent}，生成一份完整简历 HTML。"
 
@@ -1947,6 +1100,208 @@ def get_resume_file(resume_id: int):
     content = read_resume_file(resume_id)
     file_path = str(resume_file_path(resume_id))
     return {"resume_id": resume_id, "html": content, "path": file_path}
+
+
+@router.post("/chat/rollback")
+def rollback_snapshot(request: dict):
+    """回滚简历快照到指定回合深度。前端用户点击消息旁的撤销按钮时调用。
+
+    请求体: { "resume_id": int, "target_depth": int }
+    - target_depth: 该用户消息发送前已保存的回合快照深度（snapshot_depth）
+    - 回合快照是「回合开始前」的文件状态；恢复后丢弃其后所有回合快照
+    - 若 target_depth == 0，恢复到对话起点的快照并清空整栈
+    """
+    from ..services.local_edit import snapshot as snap_mod
+    from ..services.resume_workspace import read_resume_file, write_resume_file
+    from ..services.resume_db import SessionLocal
+    from ..schemas import resume_models as models
+
+    resume_id = request.get("resume_id")
+    target_depth = request.get("target_depth", 0)
+    if not resume_id:
+        raise HTTPException(status_code=400, detail="resume_id is required")
+
+    resume_id = int(resume_id)
+    result = snap_mod.rollback_to_round(resume_id, target_depth)
+
+    content = read_resume_file(resume_id)
+    write_resume_file(resume_id, content)
+
+    try:
+        db = SessionLocal()
+        try:
+            db_resume = db.query(models.Resume).filter(models.Resume.id == resume_id).first()
+            if db_resume:
+                db_resume.rendered_html = content
+                db.commit()
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    return {
+        "ok": result["ok"],
+        "message": result["message"],
+        "popped": result["popped"],
+        "current_depth": result["current_depth"],
+    }
+
+
+def _inline_local_image_refs(html: str) -> str:
+    """将 HTML 中引用的本地绝对路径图片内联为 base64 data URI。
+
+    内置浏览器（webview）通过 http 加载简历 HTML，此时 `<img src="C:\\...">` 中
+    的 `C:` 会被当作 URL 协议名而找不到，导致头像/图片无法显示；而直接双击用系统
+    浏览器打开（file://）时又能显示。这里在预览输出阶段做统一兜底：
+      - 匹配 `<img ... src="本地路径">` 与 CSS `url(本地路径)`
+      - Windows 盘符绝对路径（`C:\...` / `C:/...`）或 `file:///C:/...` 视为本地文件
+      - 读取并转成 `data:<mime>;base64,...` 原地替换，读不到则保持原样
+
+    仅对 img/src 与 url() 生效，不改写 http/data 等网络资源。
+    """
+    if not html:
+        return html
+
+    _MIME = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+        ".ico": "image/x-icon", ".bmp": "image/bmp",
+    }
+
+    def _local_path(raw: str) -> str | None:
+        """把属性值解析为本地绝对路径；非本地路径返回 None。"""
+        v = raw.strip()
+        if not v or v.startswith(("http://", "https://", "data:", "//", "#")):
+            return None
+        if v.lower().startswith(("file:", "file:///")):
+            v = v[len("file:///"):] if v.lower().startswith("file:///") else v[len("file:"):]
+        # Windows 盘符绝对路径 C:\ 或 C:/；注意不要把 C: 当协议后再尝试
+        m = re.match(r"^([a-zA-Z]):([\\/].*)$", v)
+        if not m:
+            return None
+        return v
+
+    def _to_data_uri(p: os.PathLike | str) -> str | None:
+        try:
+            pb = Path(p)
+            if not pb.is_file():
+                return None
+            mime = _mk_path.get(pb.suffix.lower(), "image/png")
+            b64 = base64.b64encode(pb.read_bytes()).decode("ascii")
+            return f"data:{mime};base64,{b64}"
+        except Exception:
+            return None
+
+    def _inline(src: str) -> str:
+        local = _local_path(src)
+        if local is None:
+            return src
+        data = _resolve_data_uri_cache(local)
+        if data is None:
+            return src
+        return data
+
+    # 对 img src（单/双引号）逐处替换
+    def _sub_img(m: "re.Match[str]") -> str:
+        quote, inner = m.group(1), m.group(2)
+        return f'<img src={quote}{_replace_local(inner)}{quote}'
+
+    def _sub_url(m: "re.Match[str]") -> str:
+        quote, inner = m.group(1), m.group(2)
+        return f'url({quote}{_replace_local(inner)}{quote})'
+
+    _REPLACED: dict[str, str] = {}
+
+    def _cache(path_str: str) -> str:
+        if path_str not in _REPLACE:
+            data = None
+            try:
+                pb = Path(path_str)
+                if pb.is_file():
+                    mime = _mk_path.get(pb.suffix.lower(), "image/png")
+                    data = f"data:{mime};base64," + base64.b64encode(pb.read_bytes()).decode("ascii")
+            except Exception:
+                data = None
+            if data is None:
+                data = path_str  # 读不出，保持原样
+            _REPLACE[path_str] = data
+        return _REPLACE[path_str]
+
+    def _normalize(raw: str) -> str:
+        v = raw.strip()
+        if not v or v.startswith(("http://", "https://", "data:", "//", "#")):
+            return raw
+        if v.lower().startswith("file:///"):
+            v = v[8:]
+        elif v.lower().startswith("file:"):
+            v = v[5:]
+        m = re.match(r"^([a-zA-Z]):([\\/].*)$", v)
+        if not m:
+            return raw
+        return _resolve(v)
+
+    def _replace_local(raw: str) -> str:
+        return _normalize(raw)
+
+    # 归一化入口：统一处理
+    def _normalize_ref(raw: str) -> str:
+        return _normalize(raw)
+
+    def _replace_attr(raw: str) -> str:
+        return _normalize_ref(raw)
+
+    def _adjust_img(m):
+        quote, inner = m.group(1), m.group(2)
+        return f'\n<img src={quote}{_replace_attr(inner)}{quote}'
+
+    def _replace_local_ref(raw: str) -> str:
+        return _normalize_ref(raw)
+
+    # ---- 应用替换 ----
+    html = re.sub(r'<img\s+src=(["\'])(.*?)\1', _sub_img, html, flags=re.IGNORECASE)
+    html = re.sub(r'url\(\s*(["\'])(.*?)\1\s*\)', _sub_url, html, flags=re.IGNORECASE)
+    return html
+
+
+def _resolve_data_uri_cache(local_path: str) -> str | None:
+    """读取本地图片并转 data URI，带进程内缓存。失败返回 None。"""
+    cache = getattr(_inline_local_image_refs, "__cache__", None)
+    if cache is None:
+        cache = {}
+        setattr(_inline_local_image_refs, "__cache__", cache)
+    if local_path in cache:
+        return cache[local_path]
+    data = None
+    try:
+        pb = Path(local_path)
+        if pb.is_file():
+            mime = _MIME_BY_EXT.get(pb.suffix.lower(), "image/png")
+            data = "data:%s;base64,%s" % (mime, base64.b64encode(pb.read_bytes()).decode("ascii"))
+    except Exception:
+        data = None
+    cache[local_path] = data
+    return data
+
+
+_MIME_BY_EXT = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+    ".ico": "image/x-icon", ".bmp": "image/bmp",
+}
+
+
+@router.get("/resumes/{resume_id}/resume.html")
+def get_resume_html_file(resume_id: int):
+    """输出简历的原始 HTML，供内置浏览器预览（Electron webview）直接加载。
+
+    为了让内置浏览器（http 上下文）与系统浏览器都能正常显示本地绝对路径的图片，
+    预览输出前会对 HTML 中引用的本地磁盘图片（Windows 盘符路径 / file:// 前缀）
+     统一内联为 base64 data URI，从而不依赖 file:// 协议的读取权限。
+    """
+    content = read_resume_file(resume_id)
+    if not content:
+        raise HTTPException(status_code=404, detail="Resume file not found")
+    return HTMLResponse(_inline_local_image_refs(content))
 
 
 @router.get("/chat/current-provider")

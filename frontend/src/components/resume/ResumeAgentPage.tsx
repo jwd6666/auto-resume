@@ -5,7 +5,7 @@ import { agentApi } from '../../api/agentApi';
 import { JobPanel } from './JobPanel';
 import { ResumePanel } from './ResumePanel';
 import { ChatPanel, type ChatPanelHandle } from './ChatPanel';
-import { ResumeEditor } from './editor/ResumeEditor';
+import { BrowserPreview, type BrowserPreviewHandle } from './BrowserPreview';
 import { RestyleResumeModal, type RestyleParams } from './RestyleResumeModal';
 import { RestyleProgressDialog, type RestyleProgressState } from './RestyleProgressDialog';
 
@@ -38,8 +38,10 @@ export function ResumeAgentPage() {
 
   const [splitRatio, setSplitRatio] = useState(DEFAULT_RATIO);
   const [dragging, setDragging] = useState(false);
+  const [chatCollapsed, setChatCollapsed] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const chatPanelRef = useRef<ChatPanelHandle>(null);
+  const browserPreviewRef = useRef<BrowserPreviewHandle>(null);
 
   // ── 后台上传任务（关闭弹窗不影响进度）──
   const [uploadTasks, setUploadTasks] = useState<UploadTask[]>([]);
@@ -204,9 +206,10 @@ export function ResumeAgentPage() {
   }, []);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (chatCollapsed) return;
     e.preventDefault();
     setDragging(true);
-  }, []);
+  }, [chatCollapsed]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -238,7 +241,6 @@ export function ResumeAgentPage() {
           <div>
             <h1 className="text-xl font-bold text-slate-100 flex items-center gap-2">
               简历优化 Agent
-              <span className="text-xs px-1.5 py-0.5 rounded bg-accent-purple/20 text-accent-purple font-normal">HTML编辑</span>
               <span className="text-xs px-1.5 py-0.5 rounded bg-accent-blue/20 text-accent-blue font-normal">AI修改</span>
             </h1>
             <p className="text-sm text-slate-500 mt-0.5">AI一键生成简历 → 智能修改 → 导出</p>
@@ -354,24 +356,29 @@ export function ResumeAgentPage() {
       )}
 
       <div ref={containerRef} className="flex-1 flex min-h-0 overflow-hidden">
-        <div style={{ width: `${splitRatio * 100}%` }} className="min-w-[280px] flex flex-col overflow-hidden">
-          <ChatPanel
-            ref={chatPanelRef}
-            job={job}
-            resume={resume}
-            onResumeSaved={handleResumeSaved}
-            sourceHtml={sourceHtml}
-            onSourceHtmlChange={handleSourceHtmlChange}
+        {!chatCollapsed && (
+          <div style={{ width: `${splitRatio * 100}%` }} className="min-w-[280px] flex flex-col overflow-hidden">
+            <ChatPanel
+              ref={chatPanelRef}
+              job={job}
+              resume={resume}
+              onResumeSaved={handleResumeSaved}
+              sourceHtml={sourceHtml}
+              onSourceHtmlChange={handleSourceHtmlChange}
+            />
+          </div>
+        )}
+
+        {!chatCollapsed && (
+          <div
+            onMouseDown={handleMouseDown}
+            className={`split-handle shrink-0 ${dragging ? 'split-handle-active' : ''}`}
           />
-        </div>
+        )}
 
-        <div
-          onMouseDown={handleMouseDown}
-          className={`split-handle shrink-0 ${dragging ? 'split-handle-active' : ''}`}
-        />
-
-        <div className="flex-1 min-w-[300px] overflow-y-auto overflow-x-hidden">
-          <ResumeEditor
+        <div className="flex-1 min-w-[300px] min-h-0 flex flex-col overflow-hidden">
+          <BrowserPreview
+            ref={browserPreviewRef}
             resume={resume}
             job={job}
             onSaved={handleResumeSaved}
@@ -379,6 +386,8 @@ export function ResumeAgentPage() {
             sourceHtml={sourceHtml}
             onSourceHtmlChange={handleSourceHtmlChange}
             onRestyle={() => setRestyleModalOpen(true)}
+            sidebarCollapsed={chatCollapsed}
+            onToggleSidebar={() => setChatCollapsed(c => !c)}
           />
         </div>
       </div>

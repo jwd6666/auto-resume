@@ -46,7 +46,6 @@ export function GenerateResumeModal({ open, onClose, job, onGenerated }: Props) 
   const handleGenerate = async () => {
     if (!job) return;
     const text = background.trim();
-    if (!text) { setError('请输入候选人背景信息'); return; }
 
     setGenerating(true);
     setError('');
@@ -77,7 +76,7 @@ export function GenerateResumeModal({ open, onClose, job, onGenerated }: Props) 
       <div className="space-y-4">
         <div>
           <label className="text-xs text-slate-400 mb-1.5 block">
-            候选人背景信息 <span className="text-red-400">*</span>
+            候选人背景信息 <span className="text-slate-600">（可选，留空则生成简历模板）</span>
           </label>
           <textarea
             value={background}
@@ -88,7 +87,7 @@ export function GenerateResumeModal({ open, onClose, job, onGenerated }: Props) 
             disabled={generating}
           />
           <p className="text-[11px] text-slate-600 mt-1">
-            请输入候选人的真实信息：姓名、联系方式、工作经历、项目经历、教育经历、技能等。AI 会根据目标岗位 JD 生成针对性简历。
+            请输入候选人的真实信息：姓名、联系方式、工作经历、项目经历、教育经历、技能等。AI 会根据目标岗位 JD 生成针对性简历；留空则生成一份基于 JD 的简历模板。
           </p>
         </div>
 
@@ -142,7 +141,7 @@ export function GenerateResumeModal({ open, onClose, job, onGenerated }: Props) 
           </button>
           <button
             onClick={handleGenerate}
-            disabled={generating || !background.trim() || !job}
+            disabled={generating || !job}
             className="flex items-center gap-1.5 px-4 py-1.5 text-xs bg-accent-purple text-white rounded-md hover:bg-accent-purple/85 disabled:opacity-40 transition-colors"
           >
             {generating ? <><Loader2 size={13} className="animate-spin" /> 生成中…</> : <><Sparkles size={13} /> 生成简历</>}

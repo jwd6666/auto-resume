@@ -88,6 +88,7 @@ class ResumeWorkspaceManager:
     def subscribe(self, resume_id: int, ws: WebSocket) -> None:
         self._subscribers.setdefault(resume_id, []).append(ws)
 
+
     def unsubscribe(self, resume_id: int, ws: WebSocket) -> None:
         subs = self._subscribers.get(resume_id)
         if subs and ws in subs:
@@ -95,6 +96,7 @@ class ResumeWorkspaceManager:
 
     async def broadcast(self, resume_id: int, message: dict) -> None:
         subs = self._subscribers.get(resume_id, [])
+
         dead: List[WebSocket] = []
         for ws in subs:
             try:

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallba
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Image from '@tiptap/extension-image';
-import { Send, Sparkles, Loader2, ClipboardCheck, AlertTriangle, Gauge, Star, ChevronDown, ChevronUp, X, Check, Cpu, ImagePlus, StopCircle, MessageSquarePlus } from 'lucide-react';
+import { Send, Sparkles, Loader2, ClipboardCheck, AlertTriangle, Gauge, Star, ChevronDown, ChevronUp, X, Check, Cpu, ImagePlus, StopCircle, MessageSquarePlus, Undo2 } from 'lucide-react';
 import clsx from 'clsx';
 import { agentApi, type ChatMessage, type Job, type Resume, type RefChip, type Scorecard, type HtmlPatch } from '../../api/agentApi';
 import { DomTag } from './editor/DomTagExtension';
@@ -22,7 +22,7 @@ interface Props {
 
 const SECTION_LABELS: Record<string, string> = {
   basics: '基本信息', intro: '个人简介', work: '工作经历', project: '项目经历', edu: '教育经历', skill: '专业技能',
-  'page-style': '页面样式',
+  summary: '自我评价', 'page-style': '页面样式',
 };
 
 function partLabel(id: string): string {
@@ -264,6 +264,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
   const [evalLoading, setEvalLoading] = useState(false);
   const [appliedPatches, setAppliedPatches] = useState<Set<string>>(new Set());
   const [toolStatus, setToolStatus] = useState<string | null>(null);
+  const [snapshotDepths, setSnapshotDepths] = useState<number[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -509,15 +510,37 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
     try {
       let fullText = '';
       const collectedPatches: HtmlPatch[] = [];
+      let turnSnapshotDepth: number | undefined;
       for await (const chunk of agentApi.chatStream(resume.id, job.id, newMessages, undefined, abortController.signal)) {
-        if (chunk.type === 'text' && chunk.content) {
+        if (chunk.type === 'snapshot_depth' && chunk.depth !== undefined) {
+          turnSnapshotDepth = chunk.depth;
+          setMessages(prev => {
+            const copy = [...prev];
+            const userIdx = copy.findIndex((m, i) => m.role === 'user' && i === newMessages.length - 1);
+            if (userIdx >= 0) {
+              copy[userIdx] = { ...copy[userIdx], snapshotDepth: chunk.depth };
+            }
+            return copy;
+          });
+          setSnapshotDepths(prev => [...prev, chunk.depth!]);
+        } else if (chunk.type === 'text' && chunk.content) {
           fullText += chunk.content;
         } else if (chunk.type === 'patch' && chunk.resumePartId !== undefined && chunk.newHtml !== undefined) {
           const patch: HtmlPatch = { resumePartId: chunk.resumePartId, newHtml: chunk.newHtml };
           collectedPatches.push(patch);
           fullText += `\n[PATCH: ${partLabel(patch.resumePartId)}]\n`;
         } else if (chunk.type === 'tool_call' && chunk.toolName) {
-          const argDesc = chunk.arguments?.path ? `(${chunk.arguments.path})` : '';
+          let argDesc = '';
+          if (chunk.toolName === 'patch_file' && chunk.arguments?.old_str) {
+            const s = String(chunk.arguments.old_str).replace(/\s+/g, ' ').trim().slice(0, 40);
+            argDesc = `(替换: ${s}${String(chunk.arguments.old_str).length > 40 ? '...' : ''})`;
+          } else if (chunk.toolName === 'patch_file' && chunk.arguments?.section_id) {
+            argDesc = `(section: ${partLabel(chunk.arguments.section_id)})`;
+          } else if (chunk.toolName === 'read_file' && chunk.arguments?.section_id) {
+            argDesc = `(section: ${partLabel(chunk.arguments.section_id)})`;
+          } else if (chunk.arguments?.path) {
+            argDesc = `(${chunk.arguments.path})`;
+          }
           setToolStatus(`正在调用工具: ${chunk.toolName} ${argDesc}`);
           fullText += `\n🔧 调用 ${chunk.toolName} ${argDesc}\n`;
         } else if (chunk.type === 'tool_result' && chunk.toolName) {
@@ -561,6 +584,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
         if (m.references) base.references = m.references;
         if (m.scorecard) base.scorecard = m.scorecard;
         if (m.patches) base.patches = m.patches;
+        if (m.snapshotDepth !== undefined) base.snapshotDepth = m.snapshotDepth;
         return base;
       }));
 
@@ -613,6 +637,32 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
     }
   };
 
+  const handleRollback = async (userMsgIndex: number, targetDepth: number) => {
+    if (!resume || streaming) return;
+    try {
+      const result = await agentApi.rollbackSnapshot(resume.id, targetDepth);
+      if (result.ok && result.popped > 0) {
+        const data = await agentApi.getResumeFile(resume.id);
+        if (data.html && data.html !== sourceHtml) {
+          onSourceHtmlChange(data.html);
+          if (resume) onResumeSaved({ ...resume, rendered_html: data.html });
+        }
+        setMessages(prev => prev.slice(0, userMsgIndex));
+        setSnapshotDepths(prev => prev.slice(0, prev.indexOf(targetDepth)));
+        await agentApi.saveConversation(resume.id, messages.slice(0, userMsgIndex).map(m => {
+          const base: any = { role: m.role, content: m.content };
+          if (m.references) base.references = m.references;
+          if (m.scorecard) base.scorecard = m.scorecard;
+          if (m.patches) base.patches = m.patches;
+          if (m.snapshotDepth !== undefined) base.snapshotDepth = m.snapshotDepth;
+          return base;
+        }));
+      }
+    } catch (e: any) {
+      console.error('回滚失败:', e);
+    }
+  };
+
   const handleEvaluate = async () => {
     if (!job || !resume || evalLoading) return;
     setEvalLoading(true);
@@ -656,6 +706,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
     if (streaming) return;
     setMessages([]);
     setAppliedPatches(new Set());
+    setSnapshotDepths([]);
     if (editor) editor.commands.clearContent();
     if (resume) {
       agentApi.saveConversation(resume.id, []).catch(() => {});
@@ -665,11 +716,11 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
   if (!job || !resume) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center px-6">
-        <div className="w-16 h-16 rounded-2xl bg-slate-800/60 flex items-center justify-center mb-3">
-          <Sparkles size={24} className="text-slate-600" />
+         <div className="w-16 h-16 rounded-2xl bg-slate-800/60 flex items-center justify-center mb-3">
+           <Sparkles size={24} className="text-slate-600" />
         </div>
-        <p className="text-sm text-slate-500">请先选择岗位和简历</p>
-        <p className="text-xs text-slate-600 mt-1">AI 将根据 JD + 简历内容提供优化建议</p>
+        <p className="text-xs text-slate-500">请先选择岗位和简历</p>
+        <p className="text-[11px] text-slate-600 mt-0.5">AI 将根据 JD + 简历内容提供优化建议</p>
       </div>
     );
   }
@@ -689,21 +740,27 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
             <Loader2 size={18} className="animate-spin text-slate-600" />
           </div>
         ) : messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 text-center">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-accent-blue/20 to-accent-purple/20 flex items-center justify-center mb-3">
-              <Sparkles size={20} className="text-accent-blue" />
+          <div className="flex flex-col items-center justify-center py-4 text-center">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-accent-blue/20 to-accent-purple/20 flex items-center justify-center mb-2">
+              <Sparkles size={16} className="text-accent-blue" />
             </div>
-            <p className="text-sm text-slate-400">AI 简历顾问已就绪</p>
-            <p className="text-xs text-slate-600 mt-1">
+            <p className="text-xs text-slate-400">AI 简历顾问已就绪</p>
+            <p className="text-[11px] text-slate-600 mt-0.5">
               基于岗位「{job.title}」+ 当前简历进行对话优化
-            </p>
-            <p className="text-xs text-slate-600 mt-2">
-              点击右侧简历的元素选择，标签将直接插入输入框
             </p>
           </div>
         ) : (
           messages.map((msg, i) => (
-            <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div key={i} className={`flex items-start gap-1.5 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              {msg.role === 'user' && msg.snapshotDepth !== undefined && !streaming && (
+                <button
+                  onClick={() => handleRollback(i, msg.snapshotDepth!)}
+                  className="shrink-0 mt-1 p-1 rounded-md text-slate-500 hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
+                  title="回滚到此消息发送前的状态"
+                >
+                  <Undo2 size={13} />
+                </button>
+              )}
               {msg.scorecard ? (
                 <div className="w-full">
                   <ScorecardView scorecard={msg.scorecard} resumeId={resume!.id} />
