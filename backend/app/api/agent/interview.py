@@ -211,12 +211,20 @@ GENERATE_BANK_SYSTEM = (
 )
 
 
-def _strip_code_fence(s: str) -> str:
+def _strip_code_fence(s: str, json_mode: bool = False) -> str:
     s = (s or "").strip()
     if s.startswith("```"):
         s = re.sub(r"^```(?:html|json|xml)?\s*", "", s, flags=re.IGNORECASE)
         s = re.sub(r"\s*```\s*$", "", s)
     s = s.strip()
+    if json_mode:
+        json_start = s.find("{")
+        if json_start > 0:
+            s = s[json_start:]
+        json_end = s.rfind("}")
+        if json_end >= 0 and json_end < len(s) - 1:
+            s = s[:json_end + 1]
+        return s.strip()
     doctype_pos = s.lower().find("<!doctype")
     html_pos = s.lower().find("<html")
     if doctype_pos >= 0 or html_pos >= 0:

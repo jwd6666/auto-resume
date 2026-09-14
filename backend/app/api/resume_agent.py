@@ -11,6 +11,7 @@ import os
 import re
 import random
 import asyncio
+import base64
 import socket
 import urllib.request
 import urllib.error
@@ -64,6 +65,7 @@ from .agent.interview import (
 from .agent.chat import generate as _generate, stream_sim as _stream_sim
 
 router = APIRouter(tags=["resume-agent"])
+
 
 # ── 数据文件路径 ──────────────────────────────────────────────
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
@@ -474,10 +476,27 @@ def _pick_competency_set_by_profile(profile: str, job_title: str) -> List[str]:
 
 
 def _normalize_scorecard(data: Dict[str, Any]) -> schemas.EvaluationScorecardResponse:
-    overall_score = int(max(0, min(100, int(data.get("overall_score", 0)))))
-    overall_summary = str(data.get("overall_summary", "")).strip()
-    needs_verification = [str(x).strip() for x in data.get("needs_verification", []) if str(x).strip()]
-    items_raw = data.get("items", []) if isinstance(data.get("items", []), list) else []
+    _SCORE_KEY_MAP = {
+        "overall_score": ["overall_score", "total_score", "综合评分", "总分", "score", "总评分"],
+        "overall_summary": ["overall_summary", "total_summary", "总结", "综合评价", "summary", "总体评价"],
+        "items": ["items", "item_list", "评分项", "competencies", "categories", "dimensions"],
+        "needs_verification": ["needs_verification", "待验证", "待核实", "verification_needed", "gaps"],
+    }
+    _ITEM_SCORE_MAP = ["score", "评分", "rating", "分数", "points"]
+    _ITEM_COMPETENCY_MAP = ["competency", "能力项", "能力", "competency_name", "dimension", "name", "title"]
+
+    def _find(data: dict, keys: list, default=None):
+        for k in keys:
+            if k in data:
+                return data[k]
+        return default
+
+    overall_score = int(max(0, min(100, int(_find(data, _SCORE_KEY_MAP["overall_score"], 0)))))
+    overall_summary = str(_find(data, _SCORE_KEY_MAP["overall_summary"], "")).strip()
+    needs_verification = [str(x).strip() for x in (_find(data, _SCORE_KEY_MAP["needs_verification"], []) or []) if str(x).strip()]
+    items_raw = _find(data, _SCORE_KEY_MAP["items"], []) or []
+    if not isinstance(items_raw, list):
+        items_raw = []
     items: List[schemas.ScoreCardItem] = []
     for it in items_raw:
         if not isinstance(it, dict):
@@ -497,10 +516,11 @@ def _normalize_scorecard(data: Dict[str, Any]) -> schemas.EvaluationScorecardRes
                     why=str(ev.get("why", "")).strip() or None,
                 )
             )
+        score_val = _find(it, _ITEM_SCORE_MAP, 0)
         items.append(
             schemas.ScoreCardItem(
-                competency=str(it.get("competency", "综合能力")).strip() or "综合能力",
-                score=int(max(0, min(100, int(it.get("score", 0))))),
+                competency=str(_find(it, _ITEM_COMPETENCY_MAP, "综合能力")).strip() or "综合能力",
+                score=int(max(0, min(100, int(score_val)))),
                 confidence=str(it.get("confidence", "中")).strip() or "中",
                 summary=str(it.get("summary", "")).strip(),
                 evidence=evidence,
@@ -809,6 +829,7 @@ async def generate_resume(body: GenerateResumeRequest, db: Session = Depends(get
     accent = body.accent if body.accent in ACCENTS else "#2563eb"
     user_msg += f"\n\n---\n\n请使用主题色 {accent}，生成一份完整简历 HTML。"
 
+
     raw = await complete_response(SYSTEM_GENERATE_RESUME, [{"role": "user", "content": user_msg}])
     html = _strip_code_fence(raw).strip()
 
@@ -859,6 +880,7 @@ async def generate_resume_stream(body: GenerateResumeRequest, db: Session = Depe
         user_msg += "\n\n---\n\n## 候选人背景信息\n\n（用户未提供候选人背景，请基于目标岗位 JD 生成一份完整的简历模板，姓名、联系方式等字段用合理的占位信息填充。）"
     accent = body.accent if body.accent in ACCENTS else "#2563eb"
     user_msg += f"\n\n---\n\n请使用主题色 {accent}，生成一份完整简历 HTML。"
+
 
     async def _stream_gen():
         html_parts: list[str] = []
@@ -967,6 +989,9 @@ async def restyle_resume_stream(resume_id: int, body: RestyleResumeRequest, db: 
         text_content += f"\n用户头像已以 base64 嵌入，请直接使用 <img src=\"{_data_uri}\"> 引用头像。\n"
 
     text_content += "\n请根据以上信息重新排版生成完整简历 HTML。"
+
+    db_restyle_job = db.query(models.Job).filter(models.Job.id == db_resume.job_id).first()
+    restyle_jd = _build_job_content(db_restyle_job) if db_restyle_job else ""
 
     user_msg_content: Any = text_content
     if has_ref_image and body.reference_image_base64:
@@ -1167,41 +1192,45 @@ def _inline_local_image_refs(html: str) -> str:
         ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
         ".ico": "image/x-icon", ".bmp": "image/bmp",
     }
+    _cache: dict[str, str] = {}
 
     def _local_path(raw: str) -> str | None:
         """把属性值解析为本地绝对路径；非本地路径返回 None。"""
         v = raw.strip()
         if not v or v.startswith(("http://", "https://", "data:", "//", "#")):
             return None
-        if v.lower().startswith(("file:", "file:///")):
-            v = v[len("file:///"):] if v.lower().startswith("file:///") else v[len("file:"):]
-        # Windows 盘符绝对路径 C:\ 或 C:/；注意不要把 C: 当协议后再尝试
+        if v.lower().startswith("file:///"):
+            v = v[8:]
+        elif v.lower().startswith("file:"):
+            v = v[5:]
         m = re.match(r"^([a-zA-Z]):([\\/].*)$", v)
         if not m:
             return None
-        return v
+        # file:/// URL 常对中文等字符做百分号编码，需解码后才是真实文件名
+        return urllib.parse.unquote(v)
 
-    def _to_data_uri(p: os.PathLike | str) -> str | None:
+    def _to_data_uri(path_str: str) -> str:
+        """读取本地图片并转 data URI，带进程内缓存。读不到返回原路径。"""
+        if path_str in _cache:
+            return _cache[path_str]
         try:
-            pb = Path(p)
-            if not pb.is_file():
-                return None
-            mime = _mk_path.get(pb.suffix.lower(), "image/png")
-            b64 = base64.b64encode(pb.read_bytes()).decode("ascii")
-            return f"data:{mime};base64,{b64}"
+            pb = Path(path_str)
+            if pb.is_file():
+                mime = _MIME.get(pb.suffix.lower(), "image/png")
+                data = f"data:{mime};base64," + base64.b64encode(pb.read_bytes()).decode("ascii")
+                _cache[path_str] = data
+                return data
         except Exception:
-            return None
+            pass
+        _cache[path_str] = path_str
+        return path_str
 
-    def _inline(src: str) -> str:
-        local = _local_path(src)
+    def _replace_local(raw: str) -> str:
+        local = _local_path(raw)
         if local is None:
-            return src
-        data = _resolve_data_uri_cache(local)
-        if data is None:
-            return src
-        return data
+            return raw
+        return _to_data_uri(local)
 
-    # 对 img src（单/双引号）逐处替换
     def _sub_img(m: "re.Match[str]") -> str:
         quote, inner = m.group(1), m.group(2)
         return f'<img src={quote}{_replace_local(inner)}{quote}'
@@ -1210,84 +1239,10 @@ def _inline_local_image_refs(html: str) -> str:
         quote, inner = m.group(1), m.group(2)
         return f'url({quote}{_replace_local(inner)}{quote})'
 
-    _REPLACED: dict[str, str] = {}
-
-    def _cache(path_str: str) -> str:
-        if path_str not in _REPLACE:
-            data = None
-            try:
-                pb = Path(path_str)
-                if pb.is_file():
-                    mime = _mk_path.get(pb.suffix.lower(), "image/png")
-                    data = f"data:{mime};base64," + base64.b64encode(pb.read_bytes()).decode("ascii")
-            except Exception:
-                data = None
-            if data is None:
-                data = path_str  # 读不出，保持原样
-            _REPLACE[path_str] = data
-        return _REPLACE[path_str]
-
-    def _normalize(raw: str) -> str:
-        v = raw.strip()
-        if not v or v.startswith(("http://", "https://", "data:", "//", "#")):
-            return raw
-        if v.lower().startswith("file:///"):
-            v = v[8:]
-        elif v.lower().startswith("file:"):
-            v = v[5:]
-        m = re.match(r"^([a-zA-Z]):([\\/].*)$", v)
-        if not m:
-            return raw
-        return _resolve(v)
-
-    def _replace_local(raw: str) -> str:
-        return _normalize(raw)
-
-    # 归一化入口：统一处理
-    def _normalize_ref(raw: str) -> str:
-        return _normalize(raw)
-
-    def _replace_attr(raw: str) -> str:
-        return _normalize_ref(raw)
-
-    def _adjust_img(m):
-        quote, inner = m.group(1), m.group(2)
-        return f'\n<img src={quote}{_replace_attr(inner)}{quote}'
-
-    def _replace_local_ref(raw: str) -> str:
-        return _normalize_ref(raw)
-
     # ---- 应用替换 ----
     html = re.sub(r'<img\s+src=(["\'])(.*?)\1', _sub_img, html, flags=re.IGNORECASE)
     html = re.sub(r'url\(\s*(["\'])(.*?)\1\s*\)', _sub_url, html, flags=re.IGNORECASE)
     return html
-
-
-def _resolve_data_uri_cache(local_path: str) -> str | None:
-    """读取本地图片并转 data URI，带进程内缓存。失败返回 None。"""
-    cache = getattr(_inline_local_image_refs, "__cache__", None)
-    if cache is None:
-        cache = {}
-        setattr(_inline_local_image_refs, "__cache__", cache)
-    if local_path in cache:
-        return cache[local_path]
-    data = None
-    try:
-        pb = Path(local_path)
-        if pb.is_file():
-            mime = _MIME_BY_EXT.get(pb.suffix.lower(), "image/png")
-            data = "data:%s;base64,%s" % (mime, base64.b64encode(pb.read_bytes()).decode("ascii"))
-    except Exception:
-        data = None
-    cache[local_path] = data
-    return data
-
-
-_MIME_BY_EXT = {
-    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-    ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
-    ".ico": "image/x-icon", ".bmp": "image/bmp",
-}
 
 
 @router.get("/resumes/{resume_id}/resume.html")
@@ -2326,6 +2281,8 @@ async def interview_sim_stream(request: schemas.InterviewSimRequest, db: Session
             messages=messages,
             user_background=request.user_background,
             questionnaire_markdown=request.questionnaire_markdown,
+            job_id=request.job_id,
+            resume_id=request.resume_id,
         )),
         media_type="text/event-stream",
         headers={
@@ -2386,7 +2343,7 @@ async def generate_scorecard(request: schemas.EvaluationScorecardRequest, db: Se
 
     parts = [
         f"## 岗位 JD\n\n{_build_job_content(db_job)}",
-        f"## 候选人简历\n\n{db_resume.content or ''}",
+        f"## 候选人简历\n\n{_extract_resume_text(db_resume)}",
     ]
     if request.user_background:
         parts.append(f"## 候选人背景补充\n\n{request.user_background}")
@@ -2401,11 +2358,13 @@ async def generate_scorecard(request: schemas.EvaluationScorecardRequest, db: Se
 
     try:
         raw = await complete_response(EVAL_SYSTEM_PROMPT, [{"role": "user", "content": user_msg}])
-        data = json.loads(_strip_code_fence(raw))
+        data = json.loads(_strip_code_fence(raw, json_mode=True))
         if not isinstance(data, dict):
             raise ValueError("invalid json object")
         normalized = _normalize_scorecard(data)
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("评分卡生成失败 raw=%s", raw[:500] if 'raw' in dir() else 'N/A', exc_info=True)
         raise HTTPException(status_code=502, detail=f"评分卡生成失败: {str(e)[:180]}")
 
     db.add(
@@ -2512,7 +2471,7 @@ JD文本：
             "你是JD信息提取助手，只输出JSON，不输出其他内容。",
             [{"role": "user", "content": parse_prompt}],
         )
-        data = json.loads(_strip_code_fence(raw))
+        data = json.loads(_strip_code_fence(raw, json_mode=True))
     except Exception:
         data = {}
 
@@ -2600,7 +2559,7 @@ async def generate_greetings(request: GenerateGreetingsRequest):
             _SYSTEM_PROMPT_GREETING,
             [{"role": "user", "content": user_content}],
         )
-        data = json.loads(_strip_code_fence(raw))
+        data = json.loads(_strip_code_fence(raw, json_mode=True))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"话术生成失败: {str(e)[:200]}")
 
@@ -2762,7 +2721,7 @@ async def analyze_job(request: JobAnalysisRequest):
             _SYSTEM_PROMPT_JOB_ANALYSIS,
             [{"role": "user", "content": user_content}],
         )
-        data = json.loads(_strip_code_fence(raw))
+        data = json.loads(_strip_code_fence(raw, json_mode=True))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"职位分析失败: {str(e)[:200]}")
 

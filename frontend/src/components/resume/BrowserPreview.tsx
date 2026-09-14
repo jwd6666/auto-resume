@@ -91,14 +91,14 @@ const PICKER_SCRIPT = `
     var tagNm = target.tagName.toLowerCase();
     var sectionId = target.getAttribute('data-resume-section') || '';
     var textContent = (target.textContent || '').trim().slice(0, 300);
-    window.__resumePickerDeactivate();
-    console.log('__RESUME_PICKER__' + JSON.stringify({ tagName: tagNm, sectionId: sectionId, textContent: textContent }));
+      window.__resumePickerDeactivate();
+      sendPickerResult({ tagName: tagNm, sectionId: sectionId, textContent: textContent });
   }
 
   function onKey(e) {
     if (e.key === 'Escape' && active) {
       window.__resumePickerDeactivate();
-      console.log('__RESUME_PICKER_ESC__');
+      sendPickerEsc();
     }
   }
 
@@ -108,11 +108,21 @@ const PICKER_SCRIPT = `
     ensureUI();
   };
 
-  window.__resumePickerDeactivate = function() {
-    active = false;
-    document.body.style.cursor = '';
-    cleanup();
-  };
+    window.__resumePickerDeactivate = function() {
+      active = false;
+      document.body.style.cursor = '';
+      cleanup();
+    };
+
+    function sendPickerResult(data) {
+      try { console.log('__RESUME_PICKER__' + JSON.stringify(data)); } catch(e) {}
+      try { window.parent.postMessage({ type: '__RESUME_PICKER__', ...data }, '*'); } catch(e) {}
+    }
+
+    function sendPickerEsc() {
+      try { console.log('__RESUME_PICKER_ESC__'); } catch(e) {}
+      try { window.parent.postMessage({ type: '__RESUME_PICKER_ESC__' }, '*'); } catch(e) {}
+    }
 
   document.addEventListener('mousemove', onMove, true);
   document.addEventListener('click', onDocClick, true);
@@ -128,6 +138,8 @@ function pathToFileUrl(p: string): string {
   if (normalized.startsWith('/')) return `file://${normalized}`;
   return `file:///${normalized}`;
 }
+
+const isElectron = typeof window !== 'undefined' && !!(window as any).autoresume?.apiBase;
 
 export interface BrowserPreviewHandle {
   activatePicker: () => void;
@@ -155,11 +167,18 @@ export const BrowserPreview = forwardRef<BrowserPreviewHandle, Props>(function B
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [err, setErr] = useState('');
-  const [filePath, setFilePath] = useState<string>('');
+  const [fileInfo, setFileInfo] = useState<{ id: number; path: string } | null>(null);
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
 
   const webviewRef = useRef<any>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  // webview 元素会随简历切换而重建，用 state 记录当前元素以便重新绑定事件监听
+  const [webviewEl, setWebviewEl] = useState<any>(null);
+  const setWebview = useCallback((el: any) => {
+    webviewRef.current = el;
+    setWebviewEl(el);
+  }, []);
   const onInsertTagRef = useRef(onInsertTag);
   const onSourceChangeRef = useRef(onSourceHtmlChange);
   const prevSourceHtmlRef = useRef<string>(sourceHtml);
@@ -168,20 +187,58 @@ export const BrowserPreview = forwardRef<BrowserPreviewHandle, Props>(function B
   useEffect(() => { onSourceChangeRef.current = onSourceHtmlChange; }, [onSourceHtmlChange]);
 
   useEffect(() => {
-    if (!sourceHtml || !webviewRef.current) return;
+    if (isElectron) return;
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type === '__RESUME_PICKER__' && e.data?.tagName && onInsertTagRef.current) {
+        onInsertTagRef.current(e.data.tagName, e.data.sectionId || '', e.data.textContent || '');
+        setPickerMode(false);
+      } else if (e.data?.type === '__RESUME_PICKER_ESC__') {
+        setPickerMode(false);
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
+  const activateIframePicker = useCallback(() => {
+    const doc = iframeRef.current?.contentDocument;
+    if (!doc) return;
+    try {
+      const script = doc.createElement('script');
+      script.textContent = PICKER_SCRIPT;
+      (doc.head || doc.documentElement).appendChild(script);
+      (doc.defaultView as any)?.__resumePickerActivate?.();
+    } catch { /* cross-origin */ }
+  }, []);
+
+  const deactivateIframePicker = useCallback(() => {
+    try {
+      (iframeRef.current?.contentDocument?.defaultView as any)?.__resumePickerDeactivate?.();
+    } catch { /* */ }
+  }, []);
+
+  useEffect(() => {
+    if (!sourceHtml) return;
     if (prevSourceHtmlRef.current === sourceHtml) return;
     if (!prevSourceHtmlRef.current) {
       prevSourceHtmlRef.current = sourceHtml;
       return;
     }
     prevSourceHtmlRef.current = sourceHtml;
-    const timer = setTimeout(() => {
-      webviewRef.current?.reloadIgnoringCache?.() ?? webviewRef.current?.reload?.();
-    }, 100);
-    return () => clearTimeout(timer);
+    if (isElectron) {
+      if (!webviewRef.current) return;
+      const timer = setTimeout(() => {
+        webviewRef.current?.reloadIgnoringCache?.() ?? webviewRef.current?.reload?.();
+      }, 100);
+      return () => clearTimeout(timer);
+    }
   }, [sourceHtml]);
 
-  const currentUrl = filePath ? pathToFileUrl(filePath) : (resume?.id != null ? agentApi.webviewResumeUrl(resume.id) : '');
+  // 只有已解析出"当前这份简历"的本地文件路径时才用 file:// URL 挂载 webview。
+  // 切换简历瞬间路径尚未解析时若先挂 http URL，之后 http→file:// 导航会被
+  // Chromium 安全策略拦截，webview 卡在 http 页面导致本地头像无法显示。
+  const fileReady = !!fileInfo && !!fileInfo.path && fileInfo.id === resume?.id;
+  const currentUrl = fileReady && fileInfo ? pathToFileUrl(fileInfo.path) : (resume?.id != null ? agentApi.webviewResumeUrl(resume.id) : '');
 
   const runPickerAction = useCallback((fn: string) => {
     const wv = webviewRef.current;
@@ -210,12 +267,20 @@ export const BrowserPreview = forwardRef<BrowserPreviewHandle, Props>(function B
 
   useEffect(() => {
     if (pickerMode) {
-      runPickerAction('__resumePickerActivate');
-      try { webviewRef.current?.focus?.(); } catch { /* */ }
+      if (isElectron) {
+        runPickerAction('__resumePickerActivate');
+        try { webviewRef.current?.focus?.(); } catch { /* */ }
+      } else {
+        activateIframePicker();
+      }
     } else {
-      runPickerAction('__resumePickerDeactivate');
+      if (isElectron) {
+        runPickerAction('__resumePickerDeactivate');
+      } else {
+        deactivateIframePicker();
+      }
     }
-  }, [pickerMode, runPickerAction]);
+  }, [pickerMode, runPickerAction, activateIframePicker, deactivateIframePicker]);
 
   useEffect(() => {
     if (!pickerMode) return;
@@ -255,7 +320,7 @@ export const BrowserPreview = forwardRef<BrowserPreviewHandle, Props>(function B
   }, []);
 
   useEffect(() => {
-    const wv = webviewRef.current;
+    const wv = webviewEl;
     if (!wv) return;
     const onDomReady = () => {
       try { wv.executeJavaScript(PICKER_SCRIPT, false); } catch { /* */ }
@@ -278,46 +343,58 @@ export const BrowserPreview = forwardRef<BrowserPreviewHandle, Props>(function B
       wv.removeEventListener('did-navigate', onNavState);
       wv.removeEventListener('did-navigate-in-page', onNavState);
     };
-  }, [handleDidFinishLoad, handleConsoleMessage]);
+  }, [handleDidFinishLoad, handleConsoleMessage, webviewEl]);
 
   useEffect(() => {
-    if (!resume?.id) { setFilePath(''); return; }
+    if (!resume?.id) { setFileInfo(null); return; }
     const unsubscribe = agentApi.subscribeResumeFileChange(resume.id, async (data: any) => {
       try {
-        if (data.path) setFilePath(data.path);
+        if (data.path) setFileInfo({ id: resume.id, path: data.path });
         const fileData = await agentApi.getResumeFile(resume.id);
-        if (fileData.path) setFilePath(fileData.path);
+        if (fileData.path) setFileInfo({ id: resume.id, path: fileData.path });
         if (fileData.html) {
           onSourceChangeRef.current(fileData.html);
           setDirty(false);
         }
-        const didReload = !!webviewRef.current?.reload;
         webviewRef.current?.reload?.();
       } catch { /* */ }
     });
     agentApi.getResumeFile(resume.id).then(d => {
-      if (d.path) setFilePath(d.path);
+      if (d.path) setFileInfo({ id: resume.id, path: d.path });
       if (d.html) onSourceChangeRef.current(d.html);
     }).catch(() => {});
     return unsubscribe;
   }, [resume?.id]);
 
   const handleReload = useCallback(() => {
-    webviewRef.current?.reloadIgnoringCache?.() ?? webviewRef.current?.reload?.();
-  }, []);
+    if (isElectron) {
+      webviewRef.current?.reloadIgnoringCache?.() ?? webviewRef.current?.reload?.();
+    } else if (iframeRef.current) {
+      const doc = iframeRef.current.contentDocument;
+      if (doc) {
+        doc.open();
+        doc.write(sourceHtml || '');
+        doc.close();
+      }
+    }
+  }, [sourceHtml]);
 
   const handleGoBack = useCallback(() => {
-    const wv = webviewRef.current;
-    if (!wv) return;
-    wv.goBack?.();
-    wv.reload?.();
+    if (isElectron) {
+      const wv = webviewRef.current;
+      if (!wv) return;
+      wv.goBack?.();
+      wv.reload?.();
+    }
   }, []);
 
   const handleGoForward = useCallback(() => {
-    const wv = webviewRef.current;
-    if (!wv) return;
-    wv.goForward?.();
-    wv.reload?.();
+    if (isElectron) {
+      const wv = webviewRef.current;
+      if (!wv) return;
+      wv.goForward?.();
+      wv.reload?.();
+    }
   }, []);
 
   const handleSave = async () => {
@@ -527,15 +604,25 @@ export const BrowserPreview = forwardRef<BrowserPreviewHandle, Props>(function B
         </div>
       )}
 
-      {/* Webview content */}
+      {/* Preview content */}
       <div className="flex-1 min-h-0 relative bg-white">
         {resume && sourceHtml ? (
-          <webview
-            ref={webviewRef}
-            src={currentUrl}
-            partition="persist:resume-preview"
-            style={{ width: '100%', height: '100%', display: 'inline-flex' }}
-          />
+          isElectron && fileReady ? (
+            <webview
+              ref={setWebview}
+              src={currentUrl}
+              partition="persist:resume-preview"
+              style={{ width: '100%', height: '100%', display: 'inline-flex' }}
+            />
+          ) : (
+            <iframe
+              ref={iframeRef}
+              srcDoc={sourceHtml}
+              sandbox="allow-scripts allow-same-origin"
+              style={{ width: '100%', height: '100%', border: 'none', background: '#fff' }}
+              title="简历预览"
+            />
+          )
         ) : (
           <div className="h-full flex items-center justify-center bg-surface-900/50">
             <div className="text-center">
@@ -544,7 +631,7 @@ export const BrowserPreview = forwardRef<BrowserPreviewHandle, Props>(function B
               </div>
               <p className="text-sm text-slate-400">简历预览</p>
               <p className="text-xs text-slate-600 mt-1">
-                {resume ? 'AI 正在生成简历预览…' : '请先选择或上传简历'}
+                {resume ? (isElectron && fileInfo ? '正在加载简历文件…' : 'AI 正在生成简历预览…') : '请先选择或上传简历'}
               </p>
             </div>
           </div>
@@ -553,10 +640,13 @@ export const BrowserPreview = forwardRef<BrowserPreviewHandle, Props>(function B
 
       {/* Status bar */}
       <div className="shrink-0 flex items-center gap-2 px-3 py-1 bg-[#1a1f2e] border-t border-slate-700/20 text-[11px] text-slate-500">
-        {filePath && (
-          <span className="truncate max-w-[300px]" title={filePath}>
-            {filePath}
+        {isElectron && fileReady && fileInfo?.path && (
+          <span className="truncate max-w-[300px]" title={fileInfo.path}>
+            {fileInfo.path}
           </span>
+        )}
+        {!isElectron && resume && (
+          <span>浏览器预览模式</span>
         )}
         <div className="flex-1" />
         {resume && (

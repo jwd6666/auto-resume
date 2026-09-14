@@ -45,39 +45,53 @@ def _compact_messages(messages: list, max_tokens: int) -> list:
         else:
             conversation_msgs.append(msg)
 
-    if len(conversation_msgs) <= 8:
+    if not conversation_msgs:
         return messages
 
-    recent = conversation_msgs[-8:]
-    older = conversation_msgs[:-8]
+    keep_min = 4
+    if len(conversation_msgs) > keep_min + 2:
+        older = conversation_msgs[:-keep_min]
+        recent = conversation_msgs[-keep_min:]
 
-    if not older:
-        return messages
+        older_summary_parts = []
+        for msg in older:
+            content = msg.get("content", "")
+            if isinstance(content, str) and content.strip():
+                older_summary_parts.append(content[:150])
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        older_summary_parts.append(part.get("text", "")[:150])
 
-    older_summary_parts = []
-    for msg in older:
-        content = msg.get("content", "")
-        if isinstance(content, str) and content.strip():
-            older_summary_parts.append(content[:150])
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    older_summary_parts.append(part.get("text", "")[:150])
+        summary_text = "；".join(older_summary_parts[:6])
+        if len(summary_text) > 500:
+            summary_text = summary_text[:500] + "..."
 
-    summary_text = "；".join(older_summary_parts[:6])
-    if len(summary_text) > 500:
-        summary_text = summary_text[:500] + "..."
+        summary_msg = {
+            "role": "user",
+            "content": f"[历史对话摘要] {summary_text}",
+        }
+        assistant_ack = {
+            "role": "assistant",
+            "content": "（已了解之前的对话背景，继续当前对话）",
+        }
 
-    summary_msg = {
-        "role": "user",
-        "content": f"[历史对话摘要] {summary_text}",
-    }
-    assistant_ack = {
-        "role": "assistant",
-        "content": "（已了解之前的对话背景，继续当前对话）",
-    }
+        result = system_msgs + [summary_msg, assistant_ack] + recent
+    else:
+        result = list(messages)
 
-    return system_msgs + [summary_msg, assistant_ack] + recent
+    if _estimate_tokens(result) <= max_tokens:
+        return result
+
+    non_system = [m for m in result if m.get("role") != "system"]
+    sys_part = [m for m in result if m.get("role") == "system"]
+
+    while len(non_system) > keep_min and _estimate_tokens(sys_part + non_system) > max_tokens:
+        non_system.pop(0)
+        if non_system and non_system[0].get("role") == "tool":
+            non_system.pop(0)
+
+    return sys_part + non_system
 
 
 def _build_message_content(msg: dict):
@@ -103,14 +117,32 @@ _FAKE_CALL_PATTERNS = [
     r"我(?:已经|已|将)?(?:读取|写入|修改|保存|替换)了?(?:文件|简历|section)",
 ]
 
+_FAKE_DONE_PATTERNS = [
+    r"(?:已|已经|成功|完成)(?:修改|调整|更改|更新|替换|写入|保存|设置|修改了)",
+    r"(?:行高|字号|字体|颜色|间距|边距|样式|排版|布局|格式|背景|对齐|加粗|斜体|下划线).*(?:已|已经|改|设|调|更)",
+    r"(?:已|已经)(?:将|把).{1,30}(?:修改|调整|更改|更新|替换|设置|改为|调成)",
+    r"(?:修改|调整|更改|更新|设置).{1,30}(?:完成|成功|好了|已|已经)",
+    r"我已经.{0,10}(?:修改|调整|更改|更新|替换|设置)",
+]
 
-def _detect_fake_tool_call(text: str) -> bool:
+_USER_INTENT_EDIT_PATTERNS = [
+    r"(?:改|修改|调整|设置|更改|更新|换|增加|删除|去掉|加大|减小|调大|调小|设成|改为|调成)",
+]
+
+
+def _detect_fake_tool_call(text: str, user_msg: str = "") -> bool:
     import re
     for pat in _FAKE_CALL_PATTERNS:
         if re.search(pat, text):
             return True
     if "===HTML_PATCH===" in text:
         return True
+    if user_msg:
+        is_edit_intent = any(re.search(pat, user_msg) for pat in _USER_INTENT_EDIT_PATTERNS)
+        if is_edit_intent:
+            for pat in _FAKE_DONE_PATTERNS:
+                if re.search(pat, text):
+                    return True
     return False
 
 
@@ -170,6 +202,13 @@ async def generate(
     resume_rendered_html: str = None,
     resume_id: int = None,
 ) -> AsyncGenerator[str, None]:
+    def _last_user_message() -> str:
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                c = m.get("content", "")
+                return c if isinstance(c, str) else ""
+        return ""
+
     file_path = ensure_resume_file(resume_id, resume_rendered_html) if resume_id else None
     # 新一轮对话：重置"已读完整文件"标记 + 清空暂存区，写入前必须重新读全文
     reset_full_read_state(resume_id)
@@ -189,6 +228,7 @@ async def generate(
             context_parts.append(f"## 当前简历文本\n\n{resume_content}")
     if user_background:
         context_parts.append(f"## 用户补充的个人经历\n\n{user_background}")
+
     if file_path:
         sections_hint = ""
         if resume_rendered_html:
@@ -206,15 +246,11 @@ async def generate(
     token_budget = int(context_limit * 0.8)
     api_messages = _compact_messages(api_messages, token_budget)
 
-    def _last_user_message() -> str:
-        for m in reversed(messages):
-            if m.get("role") == "user":
-                c = m.get("content", "")
-                return c if isinstance(c, str) else ""
-        return ""
-
     MAX_TOOL_ROUNDS = 10
+    _MAX_FAKE_RETRY = 3
+    _fake_retry_count = 0
     _context_compacted = False
+    _last_round_text = ""
 
     try:
         for _round in range(MAX_TOOL_ROUNDS):
@@ -248,8 +284,17 @@ async def generate(
                     api_messages = _compact_messages(api_messages, token_budget // 2)
                     continue
                 elif is_context_error and _context_compacted:
-                    yield f"data: {json.dumps({'type': 'error', 'content': '⚠️ 对话过长，即使压缩后仍超出限制。请开启新对话或缩短当前对话。'}, ensure_ascii=False)}\n\n"
-                    break
+                    yield f"data: {json.dumps({'type': 'error', 'content': '⚠️ 对话过长，正在进一步裁剪早期消息...'}, ensure_ascii=False)}\n\n"
+                    api_messages = _compact_messages(api_messages, token_budget // 3)
+                    if _estimate_tokens(api_messages) > token_budget // 3:
+                        non_sys = [m for m in api_messages if m.get("role") != "system"]
+                        sys_part = [m for m in api_messages if m.get("role") == "system"]
+                        while len(non_sys) > 4 and _estimate_tokens(sys_part + non_sys) > token_budget // 3:
+                            non_sys.pop(0)
+                            if non_sys and non_sys[0].get("role") == "tool":
+                                non_sys.pop(0)
+                        api_messages = sys_part + non_sys
+                    continue
                 elif is_args_error:
                     # DeepSeek 等模型可能因历史 tool_calls arguments 非法 JSON 而报 400
                     # 尝试修复：清理最近 assistant 消息中的 tool_calls arguments
@@ -260,14 +305,28 @@ async def generate(
                     yield f"data: {json.dumps({'type': 'error', 'content': f'模型调用失败: {str(stream_err)[:300]}'})}\n\n"
                     break
 
+            _last_round_text = round_text
+
             if not tool_calls_received:
-                if _round == 0 and force_tool and _detect_fake_tool_call(round_text):
-                    yield f"data: {json.dumps({'type': 'error', 'content': '⚠️ 检测到伪工具调用：模型用文本描述了工具操作但未实际调用。请重试，系统将强制要求工具调用。'}, ensure_ascii=False)}\n\n"
+                is_fake = _detect_fake_tool_call(round_text, user_msg)
+                should_force_tool = bool(file_path) and _needs_tool_use(user_msg) and "===HTML_PATCH===" not in user_msg
+
+                if is_fake and _fake_retry_count < _MAX_FAKE_RETRY:
+                    _fake_retry_count += 1
+                    yield f"data: {json.dumps({'type': 'retry', 'content': '检测到模型未实际调用工具，正在自动重试...'}, ensure_ascii=False)}\n\n"
                     api_messages.append({"role": "assistant", "content": round_text})
-                    api_messages.append({"role": "user", "content": "你刚才用文本描述了工具操作但没有实际发起tool_calls调用。这是违规的。请直接通过tool_calls调用read_file或write_file工具，不要在回复文本中描述工具操作。"})
+                    if _fake_retry_count == 1:
+                        api_messages.append({"role": "user", "content": "你刚才用文本描述了工具操作但没有实际发起tool_calls调用。这是违规的。请直接通过tool_calls调用read_file或patch_file工具来修改简历，不要在回复文本中描述工具操作。"})
+                    else:
+                        api_messages.append({"role": "user", "content": "你仍然没有实际调用工具。你必须通过tool_calls来执行操作，不要用文字说\"已修改\"。请现在就调用工具。"})
+                    choice = "required"
                     continue
 
                 if _round == 0 and force_tool and not round_text.strip():
+                    api_messages.append({"role": "user", "content": "请调用工具来修改简历文件，不要只用文字回复。"})
+                    continue
+
+                if should_force_tool and not is_fake and not round_text.strip():
                     api_messages.append({"role": "user", "content": "请调用工具来修改简历文件，不要只用文字回复。"})
                     continue
 
@@ -315,7 +374,7 @@ async def generate(
                         arg_preview[_arg_key] = str(arg_preview[_arg_key])[:200] + "..."
                 yield f"data: {json.dumps({'type': 'tool_call', 'name': call['name'], 'arguments': arg_preview}, ensure_ascii=False)}\n\n"
 
-                result = execute_tool(call["name"], call["arguments"], resume_id)
+                result = await execute_tool(call["name"], call["arguments"], resume_id)
 
                 result_preview = result[:500] + "..." if len(result) > 500 else result
                 yield f"data: {json.dumps({'type': 'tool_result', 'name': call['name'], 'result': result_preview}, ensure_ascii=False)}\n\n"
@@ -348,6 +407,8 @@ async def stream_sim(
     messages: list,
     user_background: Optional[str],
     questionnaire_markdown: Optional[str] = None,
+    job_id: Optional[int] = None,
+    resume_id: Optional[int] = None,
 ) -> AsyncGenerator[str, None]:
     context_parts = [f"## 目标岗位 JD\n\n{job_content}"]
     if resume_content:
@@ -356,6 +417,7 @@ async def stream_sim(
         context_parts.append(f"## 候选人补充经历\n\n{user_background}")
     if questionnaire_markdown and questionnaire_markdown.strip():
         context_parts.append(questionnaire_markdown.strip())
+
     context = "\n\n---\n\n".join(context_parts)
     system = f"{INTERVIEW_SIM_SYSTEM}\n\n---\n\n{context}"
 
@@ -366,4 +428,5 @@ async def stream_sim(
     except Exception as e:
         yield f"data: {json.dumps({'type': 'error', 'content': f'模型输出中断: {str(e)[:300]}'})}\n\n"
         return
+
     yield f"data: {json.dumps({'type': 'done'})}\n\n"

@@ -347,7 +347,7 @@ export const agentApi = {
     messages: ChatMessage[],
     userBackground?: string,
     signal?: AbortSignal,
-  ): AsyncGenerator<{ type: 'text' | 'patch' | 'tool_call' | 'tool_result' | 'error' | 'done' | 'snapshot_depth'; content?: string; resumePartId?: string; newHtml?: string; toolName?: string; arguments?: any; result?: string; depth?: number }> {
+  ): AsyncGenerator<{ type: 'text' | 'patch' | 'tool_call' | 'tool_result' | 'error' | 'done' | 'snapshot_depth' | 'retry'; content?: string; resumePartId?: string; newHtml?: string; toolName?: string; arguments?: any; result?: string; depth?: number }> {
     const r = await fetch(`${AGENT}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -373,8 +373,9 @@ export const agentApi = {
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.slice(6));
-              if (data.type === 'text') yield { type: 'text', content: data.content };
-              else if (data.type === 'patch') yield { type: 'patch', resumePartId: data.resumePartId, newHtml: data.newHtml };
+                if (data.type === 'text') yield { type: 'text', content: data.content };
+                else if (data.type === 'retry') yield { type: 'retry', content: data.content };
+                else if (data.type === 'patch') yield { type: 'patch', resumePartId: data.resumePartId, newHtml: data.newHtml };
               else if (data.type === 'tool_call') yield { type: 'tool_call', toolName: data.name, arguments: data.arguments };
               else if (data.type === 'tool_result') yield { type: 'tool_result', toolName: data.name, result: data.result };
               else if (data.type === 'snapshot_depth') yield { type: 'snapshot_depth', depth: data.depth };

@@ -547,6 +547,8 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
           const preview = chunk.result ? chunk.result.slice(0, 100) : '';
           setToolStatus(`工具 ${chunk.toolName} 完成: ${preview}`);
           fullText += `\n✅ ${chunk.toolName} 完成: ${preview}\n`;
+        } else if (chunk.type === 'retry' && chunk.content) {
+          fullText = `🔄 ${chunk.content}\n\n`;
         } else if (chunk.type === 'error' && chunk.content) {
           fullText += chunk.content;
         }

@@ -244,7 +244,7 @@ def _do_write_with_safety(resume_id: int, new_content: str, snap_info: dict | No
     return True, ""
 
 
-def execute_tool(name: str, arguments: dict, resume_id: int) -> str:
+async def execute_tool(name: str, arguments: dict, resume_id: int) -> str:
     if arguments is None:
         return f"工具调用参数解析失败，请重新调用 {name} 工具，确保参数是合法 JSON。"
 
