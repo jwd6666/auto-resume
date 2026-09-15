@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallba
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Image from '@tiptap/extension-image';
-import { Send, Sparkles, Loader2, ClipboardCheck, AlertTriangle, Gauge, Star, ChevronDown, ChevronUp, X, Check, Cpu, ImagePlus, StopCircle, MessageSquarePlus, Undo2 } from 'lucide-react';
+import { Send, Sparkles, Loader2, ClipboardCheck, AlertTriangle, Gauge, Star, ChevronDown, ChevronUp, X, Check, Cpu, ImagePlus, StopCircle, MessageSquarePlus, Undo2, UserCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { agentApi, type ChatMessage, type Job, type Resume, type RefChip, type Scorecard, type HtmlPatch } from '../../api/agentApi';
 import { DomTag } from './editor/DomTagExtension';
@@ -274,6 +274,8 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
   const selectedModelRef = useRef('');
   const [selectedLabel, setSelectedLabel] = useState('');
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+  const [backgroundOpen, setBackgroundOpen] = useState(false);
+  const [backgroundText, setBackgroundText] = useState('');
 
   const editor = useEditor({
     extensions: [StarterKit, DomTag, Image.configure({ inline: false })],
@@ -361,6 +363,12 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
   }, []);
 
   useEffect(() => { loadModels(); }, [messages, loadModels]);
+
+  useEffect(() => {
+    agentApi.listBackgrounds().then(profiles => {
+      if (profiles.length > 0) setBackgroundText(profiles[0].content || '');
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     const onModelsUpdated = () => loadModels();
@@ -511,7 +519,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
       let fullText = '';
       const collectedPatches: HtmlPatch[] = [];
       let turnSnapshotDepth: number | undefined;
-      for await (const chunk of agentApi.chatStream(resume.id, job.id, newMessages, undefined, abortController.signal)) {
+      for await (const chunk of agentApi.chatStream(resume.id, job.id, newMessages, backgroundText || undefined, abortController.signal)) {
         if (chunk.type === 'snapshot_depth' && chunk.depth !== undefined) {
           turnSnapshotDepth = chunk.depth;
           setMessages(prev => {
@@ -881,7 +889,42 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
               </>
             )}
           </div>
+          <button
+            onClick={() => setBackgroundOpen(p => !p)}
+            className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg border transition-colors shrink-0 ${
+              backgroundOpen
+                ? 'bg-accent-purple/15 text-accent-purple border-accent-purple/30'
+                : 'bg-surface-900/60 text-slate-400 border-slate-700/40 hover:bg-surface-700/40'
+            } ${backgroundText.trim() ? 'ring-1 ring-accent-purple/30' : ''}`}
+            title="补充个人经历给 AI"
+          >
+            <UserCircle size={12} />
+            背景
+            {backgroundText.trim() && <span className="w-1.5 h-1.5 rounded-full bg-accent-purple" />}
+          </button>
         </div>
+
+        {backgroundOpen && (
+          <div className="mb-2">
+            <textarea
+              value={backgroundText}
+              onChange={e => setBackgroundText(e.target.value)}
+              onBlur={() => {
+                if (backgroundText.trim()) {
+                  agentApi.listBackgrounds().then(profiles => {
+                    if (profiles.length > 0) {
+                      agentApi.updateBackground(profiles[0].id, { content: backgroundText });
+                    } else {
+                      agentApi.createBackground({ name: '默认', content: backgroundText });
+                    }
+                  }).catch(() => {});
+                }
+              }}
+              placeholder="补充你的个人经历、技能、项目等背景信息，AI 修改简历时会参考这些内容…"
+              className="w-full h-20 px-3 py-2 text-xs bg-surface-900/60 border border-slate-700/50 rounded-lg text-slate-300 placeholder:text-slate-600 resize-none focus:outline-none focus:border-accent-blue/50 transition-colors"
+            />
+          </div>
+        )}
 
         <div className="flex gap-2 items-end">
           <div className="flex-1 flex flex-col">

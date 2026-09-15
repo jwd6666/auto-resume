@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Optional
@@ -14,38 +15,65 @@ from ...services.local_edit.staging import get_staging, clear_staging
 from ...schemas import resume_models as models
 
 
-_FULL_FLAG: dict = {}
+class _ResumeState:
+    """Per-resume_id 的状态容器，避免全局 dict 并发冲突。"""
 
-_FILE_MD5_CACHE: dict = {}
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._full_flag: dict = {}
+        self._file_md5_cache: dict = {}
+
+    async def reset(self, resume_id) -> None:
+        async with self._lock:
+            if resume_id is not None:
+                self._full_flag.pop(int(resume_id), None)
+                self._file_md5_cache.pop(int(resume_id), None)
+                clear_staging(int(resume_id))
+
+    async def mark_full_read(self, resume_id) -> None:
+        async with self._lock:
+            if resume_id is not None:
+                self._full_flag[int(resume_id)] = True
+
+    async def has_full_read(self, resume_id) -> bool:
+        async with self._lock:
+            if resume_id is None:
+                return True
+            try:
+                return bool(self._full_flag.get(int(resume_id)))
+            except (TypeError, ValueError):
+                return True
+
+    async def cache_file_md5(self, resume_id: int, md5: str) -> None:
+        async with self._lock:
+            self._file_md5_cache[int(resume_id)] = md5
+
+    async def get_cached_md5(self, resume_id: int) -> Optional[str]:
+        async with self._lock:
+            return self._file_md5_cache.get(int(resume_id))
 
 
-def reset_full_read_state(resume_id) -> None:
-    if resume_id is not None:
-        _FULL_FLAG.pop(int(resume_id), None)
-        _FILE_MD5_CACHE.pop(int(resume_id), None)
-        clear_staging(int(resume_id))
+_state = _ResumeState()
 
 
-def _mark_full_read(resume_id) -> None:
-    if resume_id is not None:
-        _FULL_FLAG[int(resume_id)] = True
+async def reset_full_read_state(resume_id) -> None:
+    await _state.reset(resume_id)
 
 
-def _has_full_read(resume_id) -> bool:
-    if resume_id is None:
-        return True
-    try:
-        return bool(_FULL_FLAG.get(int(resume_id)))
-    except (TypeError, ValueError):
-        return True
+async def _mark_full_read(resume_id) -> None:
+    await _state.mark_full_read(resume_id)
 
 
-def _cache_file_md5(resume_id: int, md5: str) -> None:
-    _FILE_MD5_CACHE[int(resume_id)] = md5
+async def _has_full_read(resume_id) -> bool:
+    return await _state.has_full_read(resume_id)
 
 
-def _get_cached_md5(resume_id: int) -> Optional[str]:
-    return _FILE_MD5_CACHE.get(int(resume_id))
+async def _cache_file_md5(resume_id: int, md5: str) -> None:
+    await _state.cache_file_md5(resume_id, md5)
+
+
+async def _get_cached_md5(resume_id: int) -> Optional[str]:
+    return await _state.get_cached_md5(resume_id)
 
 
 RESUME_TOOLS = [
@@ -53,17 +81,17 @@ RESUME_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "读取简历 HTML 文件。默认读取完整内容；可传 section_id 只读取指定 section（更省 token）。section_id 对应 HTML 中 data-resume-section 属性值（如 'basics','edu','skill','project','summary' 等）。读取时系统自动校验文件指纹（乐观锁），确保后续修改基于最新内容。",
+            "description": "读取简历 HTML 文件。默认读取完整内容；可传 section_id 只读取指定 section（更省 token）。可用 section 列表见上下文中的「可用 section 列表」，必须使用其中列出的值。读取时系统自动校验文件指纹（乐观锁），确保后续修改基于最新内容。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "文件路径（由系统提供）",
+                        "description": "文件路径，必须从上下文中的「简历文件路径」逐字复制，禁止自行编造",
                     },
                     "section_id": {
                         "type": "string",
-                        "description": "可选。只读取此 data-resume-section 对应的 section HTML 片段，不传则读取全文。",
+                        "description": "可选。只读取此 data-resume-section 对应的 section HTML 片段，可用值见上下文中的「可用 section 列表」。不传则读取全文。",
                     },
                 },
                 "required": ["path"],
@@ -74,17 +102,17 @@ RESUME_TOOLS = [
         "type": "function",
         "function": {
             "name": "patch_file",
-            "description": "精确字符串替换修改简历 HTML（str_replace 机制，含三级降级匹配+乐观锁+自动快照回滚）。先用 read_file 查看原文，把要修改的原文片段逐字符复制为 old_str，修改后的片段作为 new_str 传入。匹配策略：精确匹配→空白符标准化→difflib 滑动窗相似度降级，命中恰好一处才执行。修改前自动将当前版本压入快照栈，若修改导致 HTML 语法错误会自动弹栈回滚。每次只改一小块，多处修改分多次调用。new_str 传空字符串表示删除 old_str。",
+            "description": "精确字符串替换修改简历 HTML（str_replace 机制，含三级降级匹配+乐观锁+自动快照回滚）。先用 read_file 查看原文，把要修改的原文片段逐字符复制为 old_str，修改后的片段作为 new_str 传入。匹配策略：精确匹配→空白符标准化→difflib 滑动窗相似度降级，命中恰好一处才执行。修改前自动将当前版本压入快照栈，若修改导致 HTML 语法错误会自动弹栈回滚。每次只改一小块，多处修改分多次调用。new_str 传空字符串表示删除 old_str。仅接受 path、old_str、new_str 三个参数，不要传入其他参数。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "文件路径（由系统提供）",
+                        "description": "文件路径，必须从上下文中的「简历文件路径」逐字复制，禁止自行编造",
                     },
                     "old_str": {
                         "type": "string",
-                        "description": "要被替换的原文片段，必须从 read_file 结果中逐字符精确复制",
+                        "description": "要被替换的原文片段，必须从 read_file 返回的真实内容中逐字符复制，保留原有的空格、Tab、换行、缩进",
                     },
                     "new_str": {
                         "type": "string",
@@ -105,7 +133,7 @@ RESUME_TOOLS = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "文件路径（由系统提供）",
+                        "description": "文件路径，必须从上下文中的「简历文件路径」逐字复制，禁止自行编造",
                     },
                     "content": {
                         "type": "string",
@@ -131,21 +159,25 @@ def _read_section(html: str, section_id: str) -> str:
         rf'<[^>]+data-resume-section\s*=\s*["\']?{re.escape(section_id)}["\']?[^>]*>.*?</(?:section|div|header|article)>',
         re.DOTALL | re.IGNORECASE,
     )
-    match = pattern.search(html)
-    if match:
-        return match.group(0)
+    matches = list(pattern.finditer(html))
+    if matches:
+        return "\n".join(m.group(0) for m in matches)
     pattern_loose = re.compile(
         rf'<[^>]+data-resume-section\s*=\s*["\']?{re.escape(section_id)}["\']?[^>]*>',
         re.IGNORECASE,
     )
-    match2 = pattern_loose.search(html)
-    if match2:
-        start = match2.start()
-        tag_name = match2.group(0).lstrip('<').split()[0].rstrip('>')
-        close_tag = f"</{tag_name}>"
-        close_pos = html.find(close_tag, start + len(match2.group(0)))
-        if close_pos != -1:
-            return html[start:close_pos + len(close_tag)]
+    loose_matches = list(pattern_loose.finditer(html))
+    if loose_matches:
+        parts = []
+        for match2 in loose_matches:
+            start = match2.start()
+            tag_name = match2.group(0).lstrip('<').split()[0].rstrip('>')
+            close_tag = f"</{tag_name}>"
+            close_pos = html.find(close_tag, start + len(match2.group(0)))
+            if close_pos != -1:
+                parts.append(html[start:close_pos + len(close_tag)])
+        if parts:
+            return "\n".join(parts)
     return ""
 
 
@@ -256,7 +288,7 @@ async def execute_tool(name: str, arguments: dict, resume_id: int) -> str:
             return "(文件为空或不存在)"
         if file_path.exists():
             file_md5 = hashing.compute_hash(file_path)
-            _cache_file_md5(resume_id, file_md5)
+            await _cache_file_md5(resume_id, file_md5)
 
         section_id = arguments.get("section_id", "").strip()
         if section_id:
@@ -264,30 +296,12 @@ async def execute_tool(name: str, arguments: dict, resume_id: int) -> str:
             if section_html:
                 return section_html
             return f"未找到 data-resume-section=\"{section_id}\" 的 section。可用的 section 列表：\n" + _list_sections(content)
-        _mark_full_read(resume_id)
+        await _mark_full_read(resume_id)
         return content
 
     elif name == "patch_file":
         old_str = arguments.get("old_str")
         new_str = arguments.get("new_str")
-
-        if not old_str and arguments.get("section_id"):
-            section_id = arguments.get("section_id", "").strip()
-            new_html = arguments.get("new_html", "")
-            if not new_html or not new_html.strip():
-                return "写入失败：new_html 参数为空。请传入该 section 修改后的完整 HTML 片段。"
-            content = read_resume_file(resume_id)
-            if not content:
-                return "文件为空，无法 patch。请先使用 write_file 写入完整 HTML。"
-            new_content = _patch_section(content, section_id, new_html)
-            if not new_content:
-                return f"未找到 data-resume-section=\"{section_id}\" 的 section，patch 失败。可用的 section 列表：\n" + _list_sections(content)
-            # 瞬态安全快照：仅用于语法校验失败回滚当前写入，不污染回合栈
-            snapshot.push_safety_snapshot(file_path, resume_id=resume_id)
-            ok, err = _do_write_with_safety(resume_id, new_content, None)
-            if not ok:
-                return err
-            return f"section[{section_id}] 已替换（旧版整段模式），共 {len(new_html)} 字符写入。前端预览将自动刷新。建议改用 patch_file(old_str, new_str) 精确替换。"
 
         if not isinstance(old_str, str) or not old_str.strip():
             return ("写入失败：old_str 参数为空。正确用法：先用 read_file 读取目标片段，"
@@ -303,15 +317,15 @@ async def execute_tool(name: str, arguments: dict, resume_id: int) -> str:
             return "old_str 与 new_str 相同，无需替换。"
 
         if file_path.exists():
-            expected_hash = _get_cached_md5(resume_id)
+            expected_hash = await _get_cached_md5(resume_id)
             if expected_hash:
                 try:
                     hashing.verify_hash(file_path, expected_hash)
                 except HashMismatchError:
                     content = read_resume_file(resume_id)
                     new_hash = hashing.compute_hash(file_path)
-                    _cache_file_md5(resume_id, new_hash)
-                    _mark_full_read(resume_id)
+                    await _cache_file_md5(resume_id, new_hash)
+                    await _mark_full_read(resume_id)
 
         try:
             match = matcher.match_once(content, old_str)
@@ -349,19 +363,19 @@ async def execute_tool(name: str, arguments: dict, resume_id: int) -> str:
         if not content or not content.strip():
             return "写入失败：content 参数为空。请重新调用 write_file，确保传入完整的 HTML 内容。"
         existing = read_resume_file(resume_id)
-        if existing and existing.strip() and not _has_full_read(resume_id):
+        if existing and existing.strip() and not await _has_full_read(resume_id):
             return ("写入被拒绝：原简历已存在内容，但你尚未在本轮对话中通过 read_file（不传 section_id）读取完整文件。"
                     "为避免覆盖丢失原内容，请先调用 read_file 读取全文，再写入；或改用 patch_file 按 section 局部修改。")
 
         if file_path.exists():
-            expected_hash = _get_cached_md5(resume_id)
+            expected_hash = await _get_cached_md5(resume_id)
             if expected_hash:
                 try:
                     hashing.verify_hash(file_path, expected_hash)
                 except HashMismatchError:
                     new_hash = hashing.compute_hash(file_path)
-                    _cache_file_md5(resume_id, new_hash)
-                    _mark_full_read(resume_id)
+                    await _cache_file_md5(resume_id, new_hash)
+                    await _mark_full_read(resume_id)
 
         if file_path.exists():
             snapshot.push_safety_snapshot(file_path, resume_id=resume_id)

@@ -33,6 +33,30 @@ def _estimate_tokens(messages: list) -> int:
     return total_chars // 2
 
 
+def _group_tool_calls(messages: list) -> list:
+    """将 messages 按 tool_calls 组切分为不可拆分的原子组。
+
+    每个组是一个 list：
+    - 普通消息 → [msg]（单元素组）
+    - assistant(tool_calls) + 后续紧跟的 tool 消息 → [assistant_msg, tool_msg1, ...]
+    """
+    groups: list = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            group = [msg]
+            i += 1
+            while i < len(messages) and messages[i].get("role") == "tool":
+                group.append(messages[i])
+                i += 1
+            groups.append(group)
+        else:
+            groups.append([msg])
+            i += 1
+    return groups
+
+
 def _compact_messages(messages: list, max_tokens: int) -> list:
     if not messages or _estimate_tokens(messages) <= max_tokens:
         return messages
@@ -48,20 +72,23 @@ def _compact_messages(messages: list, max_tokens: int) -> list:
     if not conversation_msgs:
         return messages
 
-    keep_min = 4
-    if len(conversation_msgs) > keep_min + 2:
-        older = conversation_msgs[:-keep_min]
-        recent = conversation_msgs[-keep_min:]
+    groups = _group_tool_calls(conversation_msgs)
+
+    keep_min_groups = 4
+    if len(groups) > keep_min_groups + 1:
+        older_groups = groups[:-keep_min_groups]
+        recent_groups = groups[-keep_min_groups:]
 
         older_summary_parts = []
-        for msg in older:
-            content = msg.get("content", "")
-            if isinstance(content, str) and content.strip():
-                older_summary_parts.append(content[:150])
-            elif isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        older_summary_parts.append(part.get("text", "")[:150])
+        for grp in older_groups:
+            for msg in grp:
+                content = msg.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    older_summary_parts.append(content[:150])
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            older_summary_parts.append(part.get("text", "")[:150])
 
         summary_text = "；".join(older_summary_parts[:6])
         if len(summary_text) > 500:
@@ -76,7 +103,9 @@ def _compact_messages(messages: list, max_tokens: int) -> list:
             "content": "（已了解之前的对话背景，继续当前对话）",
         }
 
-        result = system_msgs + [summary_msg, assistant_ack] + recent
+        result = system_msgs + [summary_msg, assistant_ack] + [
+            m for g in recent_groups for m in g
+        ]
     else:
         result = list(messages)
 
@@ -86,12 +115,12 @@ def _compact_messages(messages: list, max_tokens: int) -> list:
     non_system = [m for m in result if m.get("role") != "system"]
     sys_part = [m for m in result if m.get("role") == "system"]
 
-    while len(non_system) > keep_min and _estimate_tokens(sys_part + non_system) > max_tokens:
-        non_system.pop(0)
-        if non_system and non_system[0].get("role") == "tool":
-            non_system.pop(0)
+    non_sys_groups = _group_tool_calls(non_system)
 
-    return sys_part + non_system
+    while len(non_sys_groups) > 1 and _estimate_tokens(sys_part + [m for g in non_sys_groups for m in g]) > max_tokens:
+        non_sys_groups.pop(0)
+
+    return sys_part + [m for g in non_sys_groups for m in g]
 
 
 def _build_message_content(msg: dict):
@@ -118,11 +147,9 @@ _FAKE_CALL_PATTERNS = [
 ]
 
 _FAKE_DONE_PATTERNS = [
-    r"(?:已|已经|成功|完成)(?:修改|调整|更改|更新|替换|写入|保存|设置|修改了)",
-    r"(?:行高|字号|字体|颜色|间距|边距|样式|排版|布局|格式|背景|对齐|加粗|斜体|下划线).*(?:已|已经|改|设|调|更)",
-    r"(?:已|已经)(?:将|把).{1,30}(?:修改|调整|更改|更新|替换|设置|改为|调成)",
-    r"(?:修改|调整|更改|更新|设置).{1,30}(?:完成|成功|好了|已|已经)",
-    r"我已经.{0,10}(?:修改|调整|更改|更新|替换|设置)",
+    r"(?:已|已经)(?:将|把).{1,30}(?:修改|调整|更改|更新|替换|设置|改为|调成)(?:了|完成|好了|成功)",
+    r"我已经.{0,10}(?:修改|调整|更改|更新|替换|设置)(?:了|完成|好了|成功)",
+    r"(?:修改|调整|更改|更新|设置).{1,20}(?:完成|成功|好了|已搞定|已处理)",
 ]
 
 _USER_INTENT_EDIT_PATTERNS = [
@@ -211,7 +238,7 @@ async def generate(
 
     file_path = ensure_resume_file(resume_id, resume_rendered_html) if resume_id else None
     # 新一轮对话：重置"已读完整文件"标记 + 清空暂存区，写入前必须重新读全文
-    reset_full_read_state(resume_id)
+    await reset_full_read_state(resume_id)
 
     # 对话开始时自动创建快照备份，确保可回滚
     if resume_id and file_path and file_path.exists():
@@ -221,11 +248,6 @@ async def generate(
         yield f"data: {json.dumps({'type': 'snapshot_depth', 'depth': snapshot.stack_depth(resume_id)})}\n\n"
 
     context_parts = [f"## 目标岗位信息\n\n{job_content}"]
-    if resume_content:
-        if len(resume_content) > 600:
-            context_parts.append(f"## 简历摘要\n\n{resume_content[:600]}...\n（完整内容请使用 read_file 读取文件）")
-        else:
-            context_parts.append(f"## 当前简历文本\n\n{resume_content}")
     if user_background:
         context_parts.append(f"## 用户补充的个人经历\n\n{user_background}")
 
@@ -251,6 +273,8 @@ async def generate(
     _fake_retry_count = 0
     _context_compacted = False
     _last_round_text = ""
+    _override_choice = None
+    _pending_read_html = ""
 
     try:
         for _round in range(MAX_TOOL_ROUNDS):
@@ -259,10 +283,18 @@ async def generate(
 
             user_msg = _last_user_message()
             force_tool = bool(file_path) and _round == 0 and _needs_tool_use(user_msg) and "===HTML_PATCH===" not in user_msg
-            choice = "required" if force_tool else "auto"
+            if _override_choice is not None:
+                choice = _override_choice
+                _override_choice = None
+            else:
+                choice = "required" if force_tool else "auto"
 
             try:
-                async for event in stream_with_tools(system_with_context, api_messages, RESUME_TOOLS, tool_choice=choice):
+                _request_messages = list(api_messages)
+                if _pending_read_html:
+                    _request_messages.append({"role": "user", "content": f"以下是 read_file 读取的简历 HTML 完整源码（仅本次请求临时传入，不存入对话历史）：\n\n{_pending_read_html}"})
+                    _pending_read_html = ""
+                async for event in stream_with_tools(system_with_context, _request_messages, RESUME_TOOLS, tool_choice=choice):
                     etype = event.get("type")
                     if etype == "text":
                         chunk = event["content"]
@@ -286,14 +318,6 @@ async def generate(
                 elif is_context_error and _context_compacted:
                     yield f"data: {json.dumps({'type': 'error', 'content': '⚠️ 对话过长，正在进一步裁剪早期消息...'}, ensure_ascii=False)}\n\n"
                     api_messages = _compact_messages(api_messages, token_budget // 3)
-                    if _estimate_tokens(api_messages) > token_budget // 3:
-                        non_sys = [m for m in api_messages if m.get("role") != "system"]
-                        sys_part = [m for m in api_messages if m.get("role") == "system"]
-                        while len(non_sys) > 4 and _estimate_tokens(sys_part + non_sys) > token_budget // 3:
-                            non_sys.pop(0)
-                            if non_sys and non_sys[0].get("role") == "tool":
-                                non_sys.pop(0)
-                        api_messages = sys_part + non_sys
                     continue
                 elif is_args_error:
                     # DeepSeek 等模型可能因历史 tool_calls arguments 非法 JSON 而报 400
@@ -319,21 +343,23 @@ async def generate(
                         api_messages.append({"role": "user", "content": "你刚才用文本描述了工具操作但没有实际发起tool_calls调用。这是违规的。请直接通过tool_calls调用read_file或patch_file工具来修改简历，不要在回复文本中描述工具操作。"})
                     else:
                         api_messages.append({"role": "user", "content": "你仍然没有实际调用工具。你必须通过tool_calls来执行操作，不要用文字说\"已修改\"。请现在就调用工具。"})
-                    choice = "required"
+                    _override_choice = "required"
                     continue
 
                 if _round == 0 and force_tool and not round_text.strip():
                     api_messages.append({"role": "user", "content": "请调用工具来修改简历文件，不要只用文字回复。"})
+                    _override_choice = "required"
                     continue
 
                 if should_force_tool and not is_fake and not round_text.strip():
                     api_messages.append({"role": "user", "content": "请调用工具来修改简历文件，不要只用文字回复。"})
+                    _override_choice = "required"
                     continue
 
                 break
 
             assistant_msg: dict = {"role": "assistant", "content": round_text or ""}
-            _MAX_ARG_IN_CONTEXT = 8000
+            _MAX_ARG_IN_CONTEXT = 1500
             trimmed_calls = []
             for c in tool_calls_received:
                 raw_args = c.get("raw_arguments") or json.dumps(c["arguments"], ensure_ascii=False)
@@ -348,11 +374,13 @@ async def generate(
                     else:
                         raw_args = "{}"
 
-                if call_name == "write_file" and len(raw_args) > _MAX_ARG_IN_CONTEXT:
+                if call_name in ("write_file", "patch_file") and len(raw_args) > _MAX_ARG_IN_CONTEXT:
                     try:
                         parsed = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                        if isinstance(parsed, dict) and "content" in parsed:
-                            parsed["content"] = str(parsed["content"])[:_MAX_ARG_IN_CONTEXT] + f"...（共{len(str(c['arguments'].get('content', '')))}字符，已截断）"
+                        if isinstance(parsed, dict):
+                            for _trunc_key in ("content", "old_str", "new_str"):
+                                if _trunc_key in parsed and len(str(parsed[_trunc_key])) > _MAX_ARG_IN_CONTEXT:
+                                    parsed[_trunc_key] = str(parsed[_trunc_key])[:_MAX_ARG_IN_CONTEXT] + f"...（共{len(str(c['arguments'].get(_trunc_key, '')))}字符，已截断）"
                             raw_args = json.dumps(parsed, ensure_ascii=False)
                     except (json.JSONDecodeError, AttributeError):
                         pass
@@ -380,8 +408,13 @@ async def generate(
                 yield f"data: {json.dumps({'type': 'tool_result', 'name': call['name'], 'result': result_preview}, ensure_ascii=False)}\n\n"
 
                 is_read = call["name"] == "read_file"
+                read_section_id = call["arguments"].get("section_id", "").strip() if isinstance(call.get("arguments"), dict) else ""
                 if is_read:
-                    context_result = result
+                    _pending_read_html = result
+                    section_hint = f"（section: {read_section_id}）" if read_section_id else "（全文）"
+                    content_chars = len(result)
+                    section_list = _list_sections(result) if not read_section_id else ""
+                    context_result = f"【read_file 已读取{section_hint}，共{content_chars}字符。完整 HTML 已临时注入本轮 LLM 请求，不存入对话上下文。下次修改需重新 read_file。】{section_list}"
                 else:
                     MAX_TOOL_RESULT_IN_CONTEXT = 1500
                     if len(result) > MAX_TOOL_RESULT_IN_CONTEXT:

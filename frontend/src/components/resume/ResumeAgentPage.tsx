@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Briefcase, FileText, Loader2, AlertTriangle, X, RotateCw, Check } from 'lucide-react';
+import { Briefcase, FileText, Loader2, AlertTriangle, X, RotateCw, Check, Sparkles } from 'lucide-react';
 import type { Job, Resume } from '../../api/agentApi';
 import { agentApi } from '../../api/agentApi';
 import { JobPanel } from './JobPanel';
@@ -8,6 +8,7 @@ import { ChatPanel, type ChatPanelHandle } from './ChatPanel';
 import { BrowserPreview, type BrowserPreviewHandle } from './BrowserPreview';
 import { RestyleResumeModal, type RestyleParams } from './RestyleResumeModal';
 import { RestyleProgressDialog, type RestyleProgressState } from './RestyleProgressDialog';
+import { GenerateResumeInline } from './GenerateResumeInline';
 
 interface UploadTask {
   id: number;
@@ -35,6 +36,7 @@ export function ResumeAgentPage() {
   const restyleParamsRef = useRef<RestyleParams | null>(null);
   const restyleResumeIdRef = useRef<number | null>(null);
   const [sourceHtml, setSourceHtml] = useState('');
+  const [generatePanelOpen, setGeneratePanelOpen] = useState(false);
 
   const [splitRatio, setSplitRatio] = useState(DEFAULT_RATIO);
   const [dragging, setDragging] = useState(false);
@@ -263,6 +265,17 @@ export function ResumeAgentPage() {
             <span className="text-slate-300">简历：</span>
             <span className="text-accent-blue font-medium truncate max-w-[200px]">{resume?.title || '未选择'}</span>
           </button>
+          <button
+            onClick={() => setGeneratePanelOpen(p => !p)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-colors text-sm ${
+              generatePanelOpen
+                ? 'border-accent-purple/40 bg-accent-purple/10 text-accent-purple'
+                : 'border-slate-700/40 bg-surface-800/40 hover:bg-surface-700/40 text-slate-300'
+            }`}
+          >
+            <Sparkles size={14} className="text-accent-purple" />
+            AI 生成简历
+          </button>
         </div>
       </div>
 
@@ -376,7 +389,7 @@ export function ResumeAgentPage() {
           />
         )}
 
-        <div className="flex-1 min-w-[300px] min-h-0 flex flex-col overflow-hidden">
+        <div className="flex-1 min-w-[300px] min-h-0 flex flex-col overflow-hidden relative">
           <BrowserPreview
             ref={browserPreviewRef}
             resume={resume}
@@ -388,6 +401,17 @@ export function ResumeAgentPage() {
             onRestyle={() => setRestyleModalOpen(true)}
             sidebarCollapsed={chatCollapsed}
             onToggleSidebar={() => setChatCollapsed(c => !c)}
+          />
+          <GenerateResumeInline
+            job={job}
+            onGenerated={(r) => {
+              setResume(r);
+              setResumeTick(t => t + 1);
+              if (r.rendered_html) setSourceHtml(r.rendered_html);
+              setGeneratePanelOpen(false);
+            }}
+            visible={generatePanelOpen}
+            onClose={() => setGeneratePanelOpen(false)}
           />
         </div>
       </div>

@@ -1,9 +1,8 @@
 /** 简历管理面板 — 弹窗模式：上传简历/批量导入/批量管理/AI生成简历 */
 import { useEffect, useState, useRef } from 'react';
-import { FileText, Upload, ListChecks, X, Loader2, AlertTriangle, Files, Sparkles, RotateCw } from 'lucide-react';
+import { FileText, Upload, ListChecks, X, Loader2, AlertTriangle, Files, RotateCw } from 'lucide-react';
 import { agentApi, type Resume, type Job } from '../../api/agentApi';
 import { DotMenu, Modal, formatBytes, formatDateTime } from './ui';
-import { GenerateResumeModal } from './GenerateResumeModal';
 
 interface Props {
   open: boolean;
@@ -37,7 +36,6 @@ export function ResumePanel({ open, onClose, job, selectedResume, onSelect, onGe
   const [streamError, setStreamError] = useState('');
   const [batchMode, setBatchMode] = useState(false);
   const [checked, setChecked] = useState<Set<number>>(new Set());
-  const [generateModalOpen, setGenerateModalOpen] = useState(false);
   const [bgUploading, setBgUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const multiRef = useRef<HTMLInputElement>(null);
@@ -194,13 +192,7 @@ export function ResumePanel({ open, onClose, job, selectedResume, onSelect, onGe
           >
             <ListChecks size={13} /> 批量管理
           </button>
-          <button
-            onClick={() => setGenerateModalOpen(true)}
-            disabled={!job}
-            className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md bg-accent-blue/20 text-accent-blue hover:bg-accent-blue/30 transition-colors disabled:opacity-40"
-          >
-            <Sparkles size={13} /> AI生成简历
-          </button>
+
         </div>
 
         {uploading && (
@@ -291,16 +283,7 @@ export function ResumePanel({ open, onClose, job, selectedResume, onSelect, onGe
         <p className="text-[11px] text-slate-600 mt-2 pt-2 border-t border-slate-700/30">共 {resumes.length} 份简历</p>
       </div>
 
-      <GenerateResumeModal
-        open={generateModalOpen}
-        onClose={() => setGenerateModalOpen(false)}
-        job={job}
-        onGenerated={(r) => {
-          setResumes(prev => [r, ...prev]);
-          onSelect(r);
-          if (onGenerate) onGenerate();
-        }}
-      />
+
     </Modal>
   );
 }
