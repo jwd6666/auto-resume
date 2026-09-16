@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { agentApi, type Job, type GreetedItem } from '../api/agentApi';
+import { useJobs } from '../store/useJobs';
 
 const EMPTY_FORM = { title: '', content: '' };
 
@@ -32,7 +33,12 @@ function getDayLabel(day: string) {
 }
 
 export function JobManagePage() {
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const jobs = useJobs((s) => s.jobs);
+  const refreshJobs = useJobs((s) => s.refresh);
+  const upsert = useJobs((s) => s.upsert);
+  const upsertMany = useJobs((s) => s.upsertMany);
+  const remove = useJobs((s) => s.remove);
+  const removeMany = useJobs((s) => s.removeMany);
   const [jobTitles, setJobTitles] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
@@ -58,12 +64,12 @@ export function JobManagePage() {
 
   const loadJobs = useCallback(async () => {
     try {
-      const list = await agentApi.listJobs();
-      setJobs(list);
-      setJobTitles(new Set(list.map(j => j.title.trim())));
+      await refreshJobs();
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
-  }, []);
+  }, [refreshJobs]);
+
+  useEffect(() => { setJobTitles(new Set(jobs.map(j => j.title.trim()))); }, [jobs]);
 
   const loadGreeted = useCallback(async () => {
     setGreetedLoading(true);
@@ -98,7 +104,7 @@ export function JobManagePage() {
     setEditSaving(true);
     try {
       const updated = await agentApi.updateJob(editingId, { title: editForm.title, content: editForm.content });
-      setJobs(jobs.map(j => j.id === editingId ? updated : j));
+      upsert(updated);
       setJobTitles(prev => {
         const n = new Set(prev);
         const old = jobs.find(j => j.id === editingId);
@@ -117,7 +123,7 @@ export function JobManagePage() {
     setSaving(true);
     try {
       const created = await agentApi.createJob({ title: form.title, content: form.content });
-      setJobs([created, ...jobs]);
+      upsert(created);
       setJobTitles(prev => new Set(prev).add(form.title.trim()));
       setForm(EMPTY_FORM);
       setShowAdd(false);
@@ -139,7 +145,7 @@ export function JobManagePage() {
       }
       if (items.length === 0) { alert('解析失败：每个块需包含标题行与 JD 内容'); return; }
       const created = await agentApi.batchCreateJobs(items);
-      setJobs([...created.reverse(), ...jobs]);
+      upsertMany(created);
       setJobTitles(prev => { const n = new Set(prev); items.forEach(i => n.add(i.title.trim())); return n; });
       setShowBatchAdd(false);
       setBatchText('');
@@ -151,7 +157,7 @@ export function JobManagePage() {
     if (!confirm(`确认删除岗位「${job.title}」？`)) return;
     try {
       await agentApi.deleteJob(job.id);
-      setJobs(jobs.filter(j => j.id !== job.id));
+      remove(job.id);
       setJobTitles(prev => { const n = new Set(prev); n.delete(job.title.trim()); return n; });
       setExpanded(prev => { const n = new Set(prev); n.delete(job.id); return n; });
       if (editingId === job.id) cancelEdit();
@@ -164,7 +170,7 @@ export function JobManagePage() {
     try {
       for (const id of checked) await agentApi.deleteJob(id);
       const removed = jobs.filter(j => checked.has(j.id));
-      setJobs(jobs.filter(j => !checked.has(j.id)));
+      removeMany([...checked]);
       setJobTitles(prev => { const n = new Set(prev); removed.forEach(j => n.delete(j.title.trim())); return n; });
       setChecked(new Set());
       setBatchMode(false);
@@ -187,7 +193,7 @@ export function JobManagePage() {
     setImportingIds(prev => new Set(prev).add(item.id));
     try {
       const created = await agentApi.createJob({ title: item.title || '未知岗位', content: jdText });
-      setJobs([created, ...jobs]);
+      upsert(created);
       setJobTitles(prev => new Set(prev).add((item.title || '未知岗位').trim()));
       setImportedIds(prev => new Set(prev).add(item.id));
       setGreetedChecked(prev => { const n = new Set(prev); n.delete(item.id); return n; });
@@ -202,7 +208,7 @@ export function JobManagePage() {
     try {
       const items = selected.map(i => ({ title: i.title || '未知岗位', content: i.jd_text!.trim() }));
       const created = await agentApi.batchCreateJobs(items);
-      setJobs([...created.reverse(), ...jobs]);
+      upsertMany(created);
       setJobTitles(prev => { const n = new Set(prev); items.forEach(i => n.add(i.title.trim())); return n; });
       selected.forEach(i => setImportedIds(prev => new Set(prev).add(i.id)));
       setGreetedChecked(new Set());

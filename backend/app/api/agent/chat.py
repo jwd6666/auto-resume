@@ -208,8 +208,8 @@ def _fix_invalid_tool_calls_in_messages(messages: list) -> int:
             except (json.JSONDecodeError, TypeError):
                 repaired = None
                 try:
-                    from ...services.resume_provider import _repair_json_args
-                    repaired = _repair_json_args(args_str)
+                    from ...core.json_utils import repair_json_args
+                    repaired = repair_json_args(args_str)
                 except Exception:
                     pass
                 if repaired and isinstance(repaired, dict):

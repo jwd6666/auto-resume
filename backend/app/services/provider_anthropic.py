@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import AsyncGenerator
 
-from .provider_openai import _repair_json_args
+from ..core.json_utils import repair_json_args
 
 try:
     import anthropic
@@ -199,7 +199,7 @@ async def _stream_anthropic_with_tools(
                         try:
                             args = json.loads(current_tool_input) if current_tool_input else {}
                         except json.JSONDecodeError:
-                            args = _repair_json_args(current_tool_input) or {}
+                            args = repair_json_args(current_tool_input) or {}
                         tool_call_id_counter += 1
                         call_id = current_tool_id or f"call_anthropic_{tool_call_id_counter}"
                         yield {

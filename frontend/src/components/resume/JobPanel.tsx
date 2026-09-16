@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { Briefcase, Plus, Upload, ListChecks, X, Check, Loader2 } from 'lucide-react';
 import { agentApi, type Job } from '../../api/agentApi';
+import { useJobs } from '../../store/useJobs';
 import { DotMenu, Modal, formatDateTime, extractSkillTags } from './ui';
 
 interface Props {
@@ -14,7 +15,12 @@ interface Props {
 const EMPTY_FORM = { title: '', content: '' };
 
 export function JobPanel({ open, onClose, selectedJob, onSelect }: Props) {
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const jobs = useJobs((s) => s.jobs);
+  const refresh = useJobs((s) => s.refresh);
+  const upsert = useJobs((s) => s.upsert);
+  const upsertMany = useJobs((s) => s.upsertMany);
+  const remove = useJobs((s) => s.remove);
+  const removeMany = useJobs((s) => s.removeMany);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Job | null>(null);
@@ -25,16 +31,11 @@ export function JobPanel({ open, onClose, selectedJob, onSelect }: Props) {
   const [batchMode, setBatchMode] = useState(false);
   const [checked, setChecked] = useState<Set<number>>(new Set());
 
-  const load = async () => {
-    try {
-      const list = await agentApi.listJobs();
-      setJobs(list);
-      if (list.length > 0 && !selectedJob) onSelect(list[0]);
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); }
-  };
-
-  useEffect(() => { load(); }, []);
+  useEffect(() => { refresh().finally(() => setLoading(false)); }, [refresh]);
+  useEffect(() => {
+    if (!loading && jobs.length > 0 && !selectedJob) onSelect(jobs[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, jobs.length]);
 
   const handleSubmit = async () => {
     if (!form.title.trim() || !form.content.trim()) return;
@@ -45,11 +46,11 @@ export function JobPanel({ open, onClose, selectedJob, onSelect }: Props) {
       };
       if (editing) {
         const updated = await agentApi.updateJob(editing.id, payload);
-        setJobs(jobs.map(j => j.id === updated.id ? updated : j));
+        upsert(updated);
         onSelect(updated);
       } else {
         const created = await agentApi.createJob(payload);
-        setJobs([created, ...jobs]);
+        upsert(created);
         onSelect(created);
       }
       setShowForm(false); setEditing(null); setForm(EMPTY_FORM);
@@ -70,7 +71,7 @@ export function JobPanel({ open, onClose, selectedJob, onSelect }: Props) {
         created.push(await agentApi.createJob({ title, content }));
       }
       if (created.length === 0) { alert('解析失败：每个块需包含标题行与 JD 内容'); return; }
-      setJobs([...created.reverse(), ...jobs]);
+      upsertMany(created);
       onSelect(created[0]);
       setShowImport(false); setImportText('');
     } catch (e: any) { alert(`批量导入失败：${e.message}`); }
@@ -81,7 +82,7 @@ export function JobPanel({ open, onClose, selectedJob, onSelect }: Props) {
     if (!confirm(`确认删除岗位「${job.title}」？其下简历将一并删除`)) return;
     try {
       await agentApi.deleteJob(job.id);
-      setJobs(jobs.filter(j => j.id !== job.id));
+      remove(job.id);
       if (selectedJob?.id === job.id) onSelect(jobs.find(j => j.id !== job.id) ?? null);
     } catch (e: any) { alert(`删除失败：${e.message}`); }
   };
@@ -91,7 +92,7 @@ export function JobPanel({ open, onClose, selectedJob, onSelect }: Props) {
     if (!confirm(`确认删除选中的 ${checked.size} 个岗位？`)) return;
     try {
       for (const id of checked) await agentApi.deleteJob(id);
-      setJobs(jobs.filter(j => !checked.has(j.id)));
+      removeMany([...checked]);
       if (selectedJob && checked.has(selectedJob.id)) onSelect(jobs.find(j => !checked.has(j.id)) ?? null);
       setChecked(new Set()); setBatchMode(false);
     } catch (e: any) { alert(`批量删除失败：${e.message}`); }

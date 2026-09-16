@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import random
-import re
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -10,6 +9,7 @@ from typing import List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from ...services.resume_provider import complete_response
+from ...core.text_utils import strip_code_fence as _strip_code_fence
 
 
 _DATA_DIR = Path(__file__).resolve().parents[2] / "data"
@@ -209,33 +209,6 @@ GENERATE_BANK_SYSTEM = (
 - 禁止出现歧视性、违法违规或侵犯隐私的问题（如年龄、婚育、民族、宗教、性取向等受保护属性）。
 - 禁止 Markdown 代码块包裹，禁止注释。"""
 )
-
-
-def _strip_code_fence(s: str, json_mode: bool = False) -> str:
-    s = (s or "").strip()
-    if s.startswith("```"):
-        s = re.sub(r"^```(?:html|json|xml)?\s*", "", s, flags=re.IGNORECASE)
-        s = re.sub(r"\s*```\s*$", "", s)
-    s = s.strip()
-    if json_mode:
-        json_start = s.find("{")
-        if json_start > 0:
-            s = s[json_start:]
-        json_end = s.rfind("}")
-        if json_end >= 0 and json_end < len(s) - 1:
-            s = s[:json_end + 1]
-        return s.strip()
-    doctype_pos = s.lower().find("<!doctype")
-    html_pos = s.lower().find("<html")
-    if doctype_pos >= 0 or html_pos >= 0:
-        start = doctype_pos if doctype_pos >= 0 else html_pos
-        if html_pos >= 0 and html_pos < start:
-            start = html_pos
-        s = s[start:]
-    close_pos = s.lower().rfind("</html>")
-    if close_pos >= 0:
-        s = s[:close_pos + len("</html>")]
-    return s.strip()
 
 
 def parse_llm_question_list(raw: str) -> List[dict]:

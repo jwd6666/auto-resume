@@ -10,27 +10,19 @@ from typing import AsyncGenerator, Dict, Optional, Tuple
 from fastapi import HTTPException
 
 from .provider_settings import (
-    PROVIDERS, CUSTOM_PROVIDER_KEY, DEBUG_LOG_ENABLED,
+    CUSTOM_PROVIDER_KEY, DEBUG_LOG_ENABLED,
     load_settings, get_api_key, get_custom_model,
     _resolve_base_url, _resolve_current_provider,
-    _get_context_input, _get_context_output,
-    is_current_model_multimodal,
+    _get_context_output,
 )
-from .provider_openai import _repair_json_args, _stream_openai_compat
-from .provider_anthropic import (
-    _stream_anthropic, _stream_anthropic_with_tools,
-)
+from .provider_openai import _stream_openai_compat
+from ..core.json_utils import repair_json_args
 
 try:
     from openai import AsyncOpenAI, OpenAI
 except ImportError:
     AsyncOpenAI = None  # type: ignore
     OpenAI = None  # type: ignore
-
-try:
-    import anthropic
-except ImportError:
-    anthropic = None  # type: ignore
 
 
 async def test_connection(
@@ -43,16 +35,15 @@ async def test_connection(
     api_key = api_key_override or get_api_key(provider, settings)
     if not api_key:
         return False, "未配置当前所选模型的 API Key"
-    pconfig = PROVIDERS.get(provider)
 
     custom_cm: Optional[dict] = None
     if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
         custom_cm = get_custom_model(provider, settings)
         if not custom_cm:
             return False, f"找不到自定义模型: {provider}"
+    elif provider != CUSTOM_PROVIDER_KEY:
+        return False, f"不支持的 Provider: {provider}（本应用仅支持自定义模型）"
 
-    if not pconfig and provider != CUSTOM_PROVIDER_KEY and custom_cm is None:
-        return False, f"不支持的 Provider: {provider}"
     try:
         if custom_cm is not None:
             base_url = base_url_override or _resolve_base_url(custom_cm)
@@ -61,45 +52,22 @@ async def test_connection(
             test_model = model or custom_cm.get("model_id", "")
             if not test_model:
                 return False, "自定义模型未配置 Model ID"
-            clean_url = base_url.rstrip("/")
-            if clean_url.endswith("/chat/completions"):
-                clean_url = clean_url[: -len("/chat/completions")]
-            client = AsyncOpenAI(base_url=clean_url, api_key=api_key)
-            stream = await client.chat.completions.create(
-                model=test_model, messages=[{"role": "user", "content": "Hi"}], stream=True, max_tokens=10,
-            )
-            async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    break
-        elif provider == CUSTOM_PROVIDER_KEY:
+        else:
             base_url = base_url_override or settings.get("custom", {}).get("base_url", "")
             if not base_url:
                 return False, "自定义模型未配置 Base URL"
-            clean_url = base_url.rstrip("/")
-            if clean_url.endswith("/chat/completions"):
-                clean_url = clean_url[: -len("/chat/completions")]
-            client = AsyncOpenAI(base_url=clean_url, api_key=api_key)
-            stream = await client.chat.completions.create(
-                model=model, messages=[{"role": "user", "content": "Hi"}], stream=True, max_tokens=10,
-            )
-            async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    break
-        elif pconfig["type"] == "anthropic":
-            client = anthropic.AsyncAnthropic(api_key=api_key)
-            async with client.messages.stream(
-                model=model, max_tokens=10, messages=[{"role": "user", "content": "Hi"}],
-            ) as stream:
-                async for _ in stream.text_stream:
-                    break
-        else:
-            client = AsyncOpenAI(base_url=pconfig["base_url"], api_key=api_key)
-            stream = await client.chat.completions.create(
-                model=model, messages=[{"role": "user", "content": "Hi"}], stream=True, max_tokens=10,
-            )
-            async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    break
+            test_model = model
+
+        clean_url = base_url.rstrip("/")
+        if clean_url.endswith("/chat/completions"):
+            clean_url = clean_url[: -len("/chat/completions")]
+        client = AsyncOpenAI(base_url=clean_url, api_key=api_key)
+        stream = await client.chat.completions.create(
+            model=test_model, messages=[{"role": "user", "content": "Hi"}], stream=True, max_tokens=10,
+        )
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                break
         return True, "连接成功"
     except Exception as e:
         err_msg = str(e)
@@ -115,8 +83,8 @@ async def stream_response(
     messages: list,
 ) -> AsyncGenerator[str, None]:
     settings = load_settings()
-    provider = settings.get("provider", "anthropic")
-    model = settings.get("model", PROVIDERS["anthropic"]["default_model"])
+    provider = settings.get("provider", "")
+    model = settings.get("model", "")
     api_key = get_api_key(provider, settings)
 
     if not api_key:
@@ -138,30 +106,15 @@ async def stream_response(
             yield text
         return
 
-    if provider == CUSTOM_PROVIDER_KEY:
-        custom_cfg = settings.get("custom", {})
-        base_url = custom_cfg.get("base_url", "")
-        if not base_url:
-            yield "⚠️ 自定义模型未配置 Base URL，请在「模型管理」中填写。"
-            return
-        custom_model = custom_cfg.get("model", "") or model
-        async for text in _stream_openai_compat(base_url, api_key, custom_model, system, messages):
-            yield text
+    # CUSTOM_PROVIDER_KEY 或未配置情况：一律按自定义的 OpenAI 兼容模型处理
+    custom_cfg = settings.get("custom", {})
+    base_url = custom_cfg.get("base_url", "")
+    if not base_url:
+        yield "⚠️ 自定义模型未配置 Base URL，请在「模型管理」中填写。"
         return
-
-    pconfig = PROVIDERS.get(provider)
-    if not pconfig:
-        yield f"⚠️ 不支持的 Provider: {provider}"
-        return
-
-    if pconfig["type"] == "anthropic":
-        async for text in _stream_anthropic(api_key, model, system, messages):
-            yield text
-    else:
-        async for text in _stream_openai_compat(
-            pconfig["base_url"], api_key, model, system, messages
-        ):
-            yield text
+    custom_model = custom_cfg.get("model", "") or model
+    async for text in _stream_openai_compat(base_url, api_key, custom_model, system, messages):
+        yield text
 
 
 async def complete_response(system: str, messages: list) -> str:
@@ -202,22 +155,7 @@ async def complete_response_with_provider(provider: str, model: str, system: str
             parts.append(text)
         return "".join(parts)
 
-    pconfig = PROVIDERS.get(provider)
-    if not pconfig:
-        raise RuntimeError(f"不支持的 Provider: {provider}")
-
-    use_model = model or pconfig.get("default_model", "")
-
-    if pconfig["type"] == "anthropic":
-        parts: list[str] = []
-        async for text in _stream_anthropic(api_key, use_model, system, messages):
-            parts.append(text)
-        return "".join(parts)
-    else:
-        parts: list[str] = []
-        async for text in _stream_openai_compat(pconfig["base_url"], api_key, use_model, system, messages, max_tokens=max_tokens):
-            parts.append(text)
-        return "".join(parts)
+    raise RuntimeError(f"不支持的 Provider: {provider}（本应用仅支持自定义模型）")
 
 
 def complete_response_sync(system: str, messages: list, *, max_tokens: int = 8192, timeout: float = 600.0) -> str:
@@ -232,18 +170,6 @@ def complete_response_sync(system: str, messages: list, *, max_tokens: int = 819
             status_code=400,
             detail="未配置当前所选模型的 API Key，请在「模型管理」中填写。",
         )
-
-    if provider_type == "anthropic":
-        if anthropic is None:
-            raise RuntimeError("anthropic 库未安装，请 pip install anthropic")
-        client = anthropic.Anthropic(api_key=api_key, timeout=timeout)
-        resp = client.messages.create(
-            model=model_id,
-            max_tokens=max_tokens,
-            system=system,
-            messages=messages,
-        )
-        return (resp.content[0].text if resp.content else "").strip()
 
     if AsyncOpenAI is None:
         raise RuntimeError("openai 库未安装，请 pip install openai")
@@ -319,8 +245,8 @@ async def stream_with_tools(
       - {"type": "done"}                         本轮流结束
     """
     settings = load_settings()
-    provider = settings.get("provider", "anthropic")
-    model = settings.get("model", PROVIDERS["anthropic"]["default_model"])
+    provider = settings.get("provider", "")
+    model = settings.get("model", "")
     api_key = get_api_key(provider, settings)
 
     if not api_key:
@@ -341,24 +267,14 @@ async def stream_with_tools(
             yield {"type": "done"}
             return
         model = cm.get("model_id", "") or model
-    elif provider == CUSTOM_PROVIDER_KEY:
+    else:
+        # CUSTOM_PROVIDER_KEY 或未配置情况：一律按自定义的 OpenAI 兼容模型处理
         base_url = settings.get("custom", {}).get("base_url", "")
         if not base_url:
             yield {"type": "text", "content": "⚠️ 自定义模型未配置 Base URL"}
             yield {"type": "done"}
             return
         model = settings.get("custom", {}).get("model", "") or model
-    else:
-        pconfig = PROVIDERS.get(provider)
-        if not pconfig:
-            yield {"type": "text", "content": f"⚠️ 不支持的 Provider: {provider}"}
-            yield {"type": "done"}
-            return
-        if pconfig["type"] == "anthropic":
-            async for event in _stream_anthropic_with_tools(api_key, model, system, messages, tools, tool_choice):
-                yield event
-            return
-        base_url = pconfig["base_url"]
 
     if AsyncOpenAI is None:
         yield {"type": "text", "content": "⚠️ openai 库未安装"}
@@ -449,7 +365,7 @@ async def stream_with_tools(
                     try:
                         args = json.loads(raw_args)
                     except json.JSONDecodeError:
-                        args = _repair_json_args(raw_args)
+                        args = repair_json_args(raw_args)
                 else:
                     args = {}
                 calls.append({"id": tc["id"], "name": tc["name"], "arguments": args, "raw_arguments": raw_args})

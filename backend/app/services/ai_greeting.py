@@ -1,38 +1,13 @@
 """AI 招呼语生成服务：根据岗位 JD 信息调用大模型生成个性化打招呼内容。
 
-支持两种模式：
-1. 复用模型管理的统一配置（provider 为模型管理的 key，如 deepseek/zhipu/custom:xxx）
-2. 兼容旧配置（直接指定 base_url/api_key/model，旧版 AIConfig 自带 key）
+仅复用模型管理的统一自定义模型配置（provider 为模型管理的 key，如 custom:xxx）。
 """
 from __future__ import annotations
 
-import asyncio
-import json
-import urllib.request
-import urllib.error
-from typing import Optional, Tuple
+from typing import Tuple
 
 from ..schemas.task import AIConfig
-from .resume_provider import complete_response_with_provider, PROVIDERS, CUSTOM_PROVIDER_KEY
-
-_PROVIDER_DEFAULTS = {
-    "deepseek": {
-        "base_url": "https://api.deepseek.com/v1/chat/completions",
-        "model": "deepseek-chat",
-    },
-    "glm": {
-        "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-        "model": "glm-4-flash",
-    },
-    "qwen": {
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-        "model": "qwen-turbo",
-    },
-    "openai": {
-        "base_url": "https://api.openai.com/v1/chat/completions",
-        "model": "gpt-4o-mini",
-    },
-}
+from .resume_provider import complete_response_with_provider, CUSTOM_PROVIDER_KEY
 
 _SYSTEM_PROMPT = (
     "你是一位资深求职打招呼助手。你的任务是根据招聘JD和求职者的背景，判断匹配度并生成让HR觉得求职者很适合该岗位的招呼语。\n\n"
@@ -66,44 +41,9 @@ _SYSTEM_PROMPT = (
 def _is_managed_provider(provider: str) -> bool:
     if not provider:
         return False
-    if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
-        return True
-    if provider in PROVIDERS:
+    if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:") or provider == CUSTOM_PROVIDER_KEY:
         return True
     return False
-
-
-def _call_api(base_url: str, model: str, api_key: str, system_prompt: str, user_content: str) -> str:
-    url = base_url.rstrip('/')
-    payload = json.dumps({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ],
-        "max_tokens": 300,
-        "temperature": 0.7,
-        "stream": False,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = resp.read().decode("utf-8")
-            data = json.loads(body)
-            return data["choices"][0]["message"]["content"].strip()
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"AI API 返回错误 {e.code}: {body[:300]}")
-    except Exception as e:
-        raise RuntimeError(f"AI API 调用失败: {e}")
 
 
 def _clean_result(result: str) -> str:
@@ -137,13 +77,7 @@ async def generate_greeting(config: AIConfig, jd_text: str, keyword: str = "", r
             max_tokens=300,
         )
     else:
-        defaults = _PROVIDER_DEFAULTS.get(config.provider, _PROVIDER_DEFAULTS["deepseek"])
-        base_url = config.base_url.strip() or defaults["base_url"]
-        model = config.model.strip() or defaults["model"]
-        api_key = config.api_key.strip()
-        if not api_key:
-            raise RuntimeError("AI API Key 未配置")
-        result = await asyncio.to_thread(_call_api, base_url, model, api_key, _SYSTEM_PROMPT, user_content)
+        raise RuntimeError("招呼语仅支持在「模型管理」中配置的自定义模型，请检查 provider 配置")
 
     result = _clean_result(result)
 

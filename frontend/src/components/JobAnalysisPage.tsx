@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { agentApi, type CustomModel, type Job } from '../api/agentApi';
+import { useJobs } from '../store/useJobs';
 
 const isDev = location.port === '5173';
 const API_BASE = isDev ? '' : ((window as any).autoresume?.apiBase || 'http://127.0.0.1:8765');
@@ -130,7 +131,8 @@ export function JobAnalysisPage() {
     skills: true, knowledge: true, plan: true, questions: true,
   });
 
-  const [jobList, setJobList] = useState<Job[]>([]);
+  const jobList = useJobs((s) => s.jobs);
+  const refreshJobs = useJobs((s) => s.refresh);
   const [jobDropdownOpen, setJobDropdownOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -162,8 +164,8 @@ export function JobAnalysisPage() {
   useEffect(() => { loadModels(); }, [loadModels]);
 
   useEffect(() => {
-    agentApi.listJobs().then(setJobList).catch(() => {});
-  }, []);
+    refreshJobs().catch(() => {});
+  }, [refreshJobs]);
 
   useEffect(() => {
     const onLoadJob = (e: Event) => {

@@ -49,7 +49,7 @@ export function LogsPanel({ selectedTask }: Props) {
   }, [logs.length]);
 
   return (
-    <div className="card p-4 flex flex-col h-full animate-slide-up" style={{ animationDelay: '160ms' }}>
+    <div className="card p-4 flex flex-col h-[420px] animate-slide-up" style={{ animationDelay: '160ms' }}>
       {/* 标题 + 当前任务名 */}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
@@ -77,7 +77,7 @@ export function LogsPanel({ selectedTask }: Props) {
       </div>
 
       {/* 日志内容 */}
-      <div ref={logRef} className="flex-1 overflow-y-auto scrollbar-thin min-h-[120px] font-mono text-[11px] leading-relaxed space-y-0.5">
+      <div ref={logRef} className="flex-1 min-h-0 overflow-y-auto scrollbar-thin font-mono text-[11px] leading-relaxed space-y-0.5">
         {!selectedTask ? (
           <div className="h-full flex flex-col items-center justify-center text-center py-6">
             <div className="w-10 h-10 rounded-full bg-slate-800/60 flex items-center justify-center mb-2">

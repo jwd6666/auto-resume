@@ -40,7 +40,7 @@ from ..schemas import resume_models as models
 from ..schemas import resume_schemas as schemas
 from ..services.resume_provider import (
     stream_response, stream_with_tools, complete_response, load_settings, get_api_key,
-    save_settings, sync_env_file, test_connection, PROVIDERS,
+    save_settings, test_connection, PROVIDERS,
     add_custom_model, delete_custom_model, update_custom_model,
     get_custom_model, CUSTOM_PROVIDER_KEY, sse_with_heartbeat,
 )
@@ -1263,16 +1263,23 @@ def get_resume_html_file(resume_id: int):
 def get_current_provider():
     """Return the currently configured provider and model info for the UI."""
     settings = load_settings()
-    provider_id = settings.get("provider", "anthropic")
+    provider_id = settings.get("provider", "")
     model_id = settings.get("model", "")
-    pconfig = PROVIDERS.get(provider_id, {})
-    model_name = next(
-        (m["name"] for m in pconfig.get("models", []) if m["id"] == model_id),
-        model_id,
-    )
+
+    # 自定义模型：从 settings.custom_models 解析显示名
+    model_name = model_id
+    provider_name = provider_id or "未配置"
+    if provider_id.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
+        cm = get_custom_model(provider_id, settings)
+        if cm:
+            model_name = cm.get("display_name") or cm.get("model_id") or model_id
+            provider_name = "自定义模型"
+    elif provider_id == CUSTOM_PROVIDER_KEY:
+        provider_name = "自定义模型"
+
     return {
         "provider": provider_id,
-        "provider_name": pconfig.get("name_cn", provider_id),
+        "provider_name": provider_name,
         "model": model_id,
         "model_name": model_name,
     }
@@ -1473,10 +1480,8 @@ def export_word(
 @router.get("/settings")
 def get_settings():
     settings = load_settings()
-    masked = {
-        p: ("••••••" if get_api_key(p, settings) else "")
-        for p in PROVIDERS
-    }
+    # 本应用仅支持自定义模型，无内置厂商的 api_key
+    masked = {}
     custom_cfg = settings.get("custom", {})
 
     # 多自定义模型列表（脱敏后返回前端）
@@ -1656,14 +1661,11 @@ def update_settings(body: SettingsUpdate):
     settings["provider"] = body.provider
     settings["model"] = body.model
 
-    to_sync = {}
     if body.api_keys:
         for k, v in body.api_keys.items():
             if v == "••••••":
                 continue
             settings["api_keys"][k] = v
-            if v and v.strip():
-                to_sync[k] = v.strip()
 
     # 自定义模型配置
     custom_cfg = settings.get("custom", {})
@@ -1676,8 +1678,6 @@ def update_settings(body: SettingsUpdate):
     settings["custom"] = custom_cfg
 
     save_settings(settings)
-    if to_sync:
-        sync_env_file(to_sync)
     return {"message": "Settings saved"}
 
 
@@ -1687,7 +1687,6 @@ def clear_api_key(provider: str):
     if provider in settings.get("api_keys", {}):
         settings["api_keys"][provider] = ""
         save_settings(settings)
-        sync_env_file({provider: ""})
     return {"message": f"API key for {provider} cleared"}
 
 

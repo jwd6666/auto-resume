@@ -1,101 +1,16 @@
-"""AI 提供商配置管理：内置 provider 定义、设置读写、自定义模型 CRUD、provider 解析。"""
+"""AI 提供商配置管理：设置读写、自定义模型 CRUD、provider 解析。"""
 from __future__ import annotations
 
 import json
 import os
-import re
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 DEBUG_LOG_ENABLED = False
 
-ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
-
-PROVIDERS: dict = {
-    "anthropic": {
-        "name": "Anthropic Claude",
-        "name_cn": "Claude",
-        "type": "anthropic",
-        "env_key": "ANTHROPIC_API_KEY",
-        "models": [
-            {"id": "claude-opus-4-6",   "name": "Claude Opus 4.6 (最强)", "multimodal": True},
-            {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (均衡)", "multimodal": True},
-            {"id": "claude-haiku-4-5",  "name": "Claude Haiku 4.5 (快速)", "multimodal": True},
-        ],
-        "default_model": "claude-opus-4-6",
-    },
-    "qwen": {
-        "name": "通义千问 (Qwen)",
-        "name_cn": "通义千问",
-        "type": "openai_compat",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "env_key": "DASHSCOPE_API_KEY",
-        "models": [
-            {"id": "qwen-max",         "name": "Qwen Max (最强)", "multimodal": True},
-            {"id": "qwen-plus",        "name": "Qwen Plus (均衡)"},
-            {"id": "qwen-turbo",       "name": "Qwen Turbo (快速)"},
-            {"id": "qwen-long",        "name": "Qwen Long (长文本)"},
-            {"id": "qwen3-235b-a22b",  "name": "Qwen3-235B (最新)", "multimodal": True},
-            {"id": "qwen3-32b",        "name": "Qwen3-32B"},
-        ],
-        "default_model": "qwen-plus",
-    },
-    "zhipu": {
-        "name": "智谱 GLM",
-        "name_cn": "智谱",
-        "type": "openai_compat",
-        "base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "env_key": "ZHIPU_API_KEY",
-        "models": [
-            {"id": "glm-4-plus",  "name": "GLM-4-Plus (旗舰)", "multimodal": True},
-            {"id": "glm-4",       "name": "GLM-4", "multimodal": True},
-            {"id": "glm-4-flash", "name": "GLM-4-Flash (快速免费)", "multimodal": True},
-            {"id": "glm-4-air",   "name": "GLM-4-Air"},
-            {"id": "glm-z1-plus", "name": "GLM-Z1-Plus (推理)"},
-        ],
-        "default_model": "glm-4-flash",
-    },
-    "deepseek": {
-        "name": "DeepSeek",
-        "name_cn": "DeepSeek",
-        "type": "openai_compat",
-        "base_url": "https://api.deepseek.com/v1",
-        "env_key": "DEEPSEEK_API_KEY",
-        "models": [
-            {"id": "deepseek-chat",     "name": "DeepSeek V3 (对话)"},
-            {"id": "deepseek-reasoner", "name": "DeepSeek R1 (推理)"},
-        ],
-        "default_model": "deepseek-chat",
-    },
-    "moonshot": {
-        "name": "Moonshot (Kimi)",
-        "name_cn": "Kimi",
-        "type": "openai_compat",
-        "base_url": "https://api.moonshot.cn/v1",
-        "env_key": "MOONSHOT_API_KEY",
-        "models": [
-            {"id": "moonshot-v1-128k", "name": "Moonshot 128K (推荐)"},
-            {"id": "moonshot-v1-32k",  "name": "Moonshot 32K"},
-            {"id": "moonshot-v1-8k",   "name": "Moonshot 8K (快速)"},
-        ],
-        "default_model": "moonshot-v1-128k",
-    },
-    "baidu": {
-        "name": "百度文心 (ERNIE)",
-        "name_cn": "文心",
-        "type": "openai_compat",
-        "base_url": "https://qianfan.baidubce.com/v2",
-        "env_key": "QIANFAN_API_KEY",
-        "models": [
-            {"id": "ernie-4.0-8k",          "name": "ERNIE 4.0 (旗舰)", "multimodal": True},
-            {"id": "ernie-4.0-turbo-8k",     "name": "ERNIE 4.0 Turbo"},
-            {"id": "ernie-3.5-8k",           "name": "ERNIE 3.5"},
-            {"id": "ernie-speed-128k",        "name": "ERNIE Speed (长文本)"},
-        ],
-        "default_model": "ernie-4.0-turbo-8k",
-    },
-}
+# 本应用仅支持自定义模型，不再内置厂商。此处保留空字典以兼容既有 import 与返回结构。
+PROVIDERS: dict = {}
 
 CUSTOM_PROVIDER_KEY = "custom"
 
@@ -158,11 +73,8 @@ def get_api_key(provider: str, settings: dict) -> str:
         if cm:
             return cm.get("api_key", "")
         return ""
-    key_from_settings = settings.get("api_keys", {}).get(provider, "")
-    if key_from_settings:
-        return key_from_settings
-    env_var = PROVIDERS.get(provider, {}).get("env_key", "")
-    return os.environ.get(env_var, "")
+    # 仅支持自定义模型；此处保留设置文件中的 api_keys（通常为空）作为兼容兜底
+    return settings.get("api_keys", {}).get(provider, "")
 
 
 def get_custom_model(provider: str, settings: dict) -> Optional[dict]:
@@ -257,40 +169,9 @@ def _resolve_base_url(cm: dict) -> str:
     return url
 
 
-def sync_env_file(updates: Dict[str, str]) -> None:
-    if not updates:
-        return
-    to_write: Dict[str, str] = {}
-    for provider, value in updates.items():
-        if provider not in PROVIDERS:
-            continue
-        env_var = PROVIDERS[provider].get("env_key", "")
-        if not env_var:
-            continue
-        to_write[env_var] = (value or "").strip()
-    if not to_write:
-        return
-    lines = ENV_FILE.read_text(encoding="utf-8").splitlines() if ENV_FILE.exists() else []
-    written = set()
-    new_lines = []
-    for line in lines:
-        m = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$", line)
-        if m and m.group(1) in to_write:
-            env_var = m.group(1)
-            new_lines.append(f"{env_var}={to_write[env_var]}")
-            written.add(env_var)
-        else:
-            new_lines.append(line)
-    for env_var, val in to_write.items():
-        if env_var not in written:
-            new_lines.append(f"{env_var}={val}")
-    ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
-    ENV_FILE.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-
-
 def _resolve_current_provider(settings: dict) -> Tuple[str, str, str, str]:
-    provider = settings.get("provider", "anthropic")
-    model = settings.get("model", PROVIDERS.get("anthropic", {}).get("default_model", ""))
+    provider = settings.get("provider", "")
+    model = settings.get("model", "")
     api_key = get_api_key(provider, settings)
 
     if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
@@ -299,18 +180,9 @@ def _resolve_current_provider(settings: dict) -> Tuple[str, str, str, str]:
             return _resolve_base_url(cm), api_key, cm.get("model_id", "") or model, "openai_compat"
         return "", api_key, model, "openai_compat"
 
-    if provider == CUSTOM_PROVIDER_KEY:
-        custom_cfg = settings.get("custom", {})
-        return custom_cfg.get("base_url", ""), api_key, custom_cfg.get("model", "") or model, "openai_compat"
-
-    pconfig = PROVIDERS.get(provider)
-    if not pconfig:
-        return "", api_key, model, "openai_compat"
-
-    if pconfig["type"] == "anthropic":
-        return "", api_key, model, "anthropic"
-
-    return pconfig.get("base_url", ""), api_key, model, "openai_compat"
+    # CUSTOM_PROVIDER_KEY 或任何非自定义 provider：一律按 OpenAI 兼容对待
+    custom_cfg = settings.get("custom", {})
+    return custom_cfg.get("base_url", ""), api_key, custom_cfg.get("model", "") or model, "openai_compat"
 
 
 def _get_context_input(settings: dict) -> int:
@@ -319,21 +191,12 @@ def _get_context_input(settings: dict) -> int:
         cm = get_custom_model(provider, settings)
         if cm:
             return int(cm.get("context_input") or 128000)
-    if provider == CUSTOM_PROVIDER_KEY:
-        return 128000
-    _PROVIDER_DEFAULTS = {
-        "anthropic": 200000,
-        "qwen": 131072,
-        "zhipu": 128000,
-        "deepseek": 128000,
-        "moonshot": 131072,
-        "baidu": 128000,
-    }
-    return _PROVIDER_DEFAULTS.get(provider, 128000)
+    # 仅支持自定义模型；默认 128K
+    return 128000
 
 
 def _get_context_output(settings: dict) -> int:
-    provider = settings.get("provider", "anthropic")
+    provider = settings.get("provider", "")
     if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
         cm = get_custom_model(provider, settings)
         if cm:
@@ -343,19 +206,7 @@ def _get_context_output(settings: dict) -> int:
 
 def is_current_model_multimodal(settings: dict) -> bool:
     provider = settings.get("provider", "")
-    model_id = settings.get("model", "")
-
     if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
         cm = get_custom_model(provider, settings)
         return bool(cm and cm.get("multimodal"))
-
-    if provider == CUSTOM_PROVIDER_KEY:
-        return False
-
-    pconfig = PROVIDERS.get(provider)
-    if pconfig:
-        for m in pconfig.get("models", []):
-            if m.get("id") == model_id:
-                return bool(m.get("multimodal"))
-
     return False

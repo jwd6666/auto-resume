@@ -14,7 +14,6 @@ from .provider_settings import (
     PROVIDERS,
     CUSTOM_PROVIDER_KEY,
     DEBUG_LOG_ENABLED,
-    ENV_FILE,
     SETTINGS_FILE,
     _DEFAULT_SETTINGS,
     load_settings,
@@ -25,7 +24,6 @@ from .provider_settings import (
     delete_custom_model,
     update_custom_model,
     _resolve_base_url,
-    sync_env_file,
     _resolve_current_provider,
     _get_context_input,
     _get_context_output,
@@ -41,7 +39,6 @@ from .provider_anthropic import (
 )
 
 from .provider_openai import (
-    _repair_json_args,
     _stream_openai_compat,
 )
 
