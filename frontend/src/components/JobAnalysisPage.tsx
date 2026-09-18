@@ -9,7 +9,8 @@ import { agentApi, type CustomModel, type Job } from '../api/agentApi';
 import { useJobs } from '../store/useJobs';
 
 const isDev = location.port === '5173';
-const API_BASE = isDev ? '' : ((window as any).autoresume?.apiBase || 'http://127.0.0.1:8765');
+const isElectron = !!(window as any).autoresume?.apiBase;
+const API_BASE = isDev ? '' : (isElectron ? (window as any).autoresume.apiBase : '');
 const AGENT = `${API_BASE}/agent`;
 
 interface JdParseResult {

@@ -23,9 +23,14 @@ export function TopNav() {
 
       {/* Right entries */}
       <div className="flex items-center gap-2">
-        <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800/60">
+        <a
+          href="https://rcnchhlydglp.feishu.cn/wiki/KzNTwo9zDiqmuykXpXEctrD5nLd?from=from_copylink"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"
+        >
           <BookOpen size={15} /> 使用教程
-        </button>
+        </a>
         <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800/60">
           <Settings size={15} /> 设置
         </button>

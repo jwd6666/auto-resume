@@ -9,7 +9,8 @@ import { agentApi, type SettingsInfo, type CustomModel } from '../api/agentApi';
 import { PersonalInfoModal, loadPersonalInfo, buildPersonalInfoText } from './PersonalInfoModal';
 
 const isDev = location.port === '5173';
-const API_BASE = isDev ? '' : ((window as any).autoresume?.apiBase || 'http://127.0.0.1:8765');
+const isElectron = !!(window as any).autoresume?.apiBase;
+const API_BASE = isDev ? '' : (isElectron ? (window as any).autoresume.apiBase : '');
 const AGENT = `${API_BASE}/agent`;
 
 interface JdParseResult {

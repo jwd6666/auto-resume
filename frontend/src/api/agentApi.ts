@@ -2,7 +2,8 @@
 // 开发环境（Vite dev server）使用相对路径走 proxy，避免系统代理拦截 localhost 请求
 // 生产环境（Electron）使用 preload 注入的绝对路径
 const isDev = location.port === '5173';
-const API_BASE = isDev ? '' : ((window as any).autoresume?.apiBase || 'http://127.0.0.1:8765');
+const isElectron = !!(window as any).autoresume?.apiBase;
+const API_BASE = isDev ? '' : (isElectron ? (window as any).autoresume.apiBase : '');
 
 const AGENT = `${API_BASE}/agent`;
 
@@ -404,7 +405,7 @@ export const agentApi = {
   webviewResumeUrl(resumeId: number): string {
     const base = isDev
       ? 'http://127.0.0.1:8765'
-      : (window as any).autoresume?.apiBase || 'http://127.0.0.1:8765';
+      : (window as any).autoresume?.apiBase || '';
     return `${base}${AGENT.replace(API_BASE, '')}/resumes/${resumeId}/resume.html`;
   },
 
