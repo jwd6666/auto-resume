@@ -1,6 +1,8 @@
 /** 后端 REST/WebSocket 客户端封装。 */
 // 开发环境（Vite dev server）使用相对路径走 proxy，避免系统代理拦截 localhost 请求
 // 生产环境（Electron）使用 preload 注入的绝对路径
+import { authHeaders, withTokenQuery } from './common';
+
 const isDev = location.port === '5173';
 const isElectron = !!(window as any).autoresume?.apiBase;
 const API_BASE = isDev ? '' : (isElectron ? (window as any).autoresume.apiBase : '');
@@ -67,8 +69,8 @@ export interface TaskCreatePayload {
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
     ...init,
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
   });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json();
@@ -100,7 +102,7 @@ export const api = {
 };
 
 export function openTaskWS(taskId: string, onMessage: (m: any) => void): WebSocket {
-  const wsUrl = API_BASE.replace(/^http/, 'ws') + `/api/tasks/ws/${taskId}`;
+  const wsUrl = withTokenQuery(API_BASE.replace(/^http/, 'ws') + `/api/tasks/ws/${taskId}`);
   const ws = new WebSocket(wsUrl);
   ws.onmessage = (ev) => {
     try { onMessage(JSON.parse(ev.data)); } catch { /* ignore */ }

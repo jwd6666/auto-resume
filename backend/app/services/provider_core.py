@@ -10,13 +10,14 @@ from typing import AsyncGenerator, Dict, Optional, Tuple
 from fastapi import HTTPException
 
 from .provider_settings import (
-    CUSTOM_PROVIDER_KEY, DEBUG_LOG_ENABLED,
+    CUSTOM_PROVIDER_KEY, CLOUD_PROVIDER_PREFIX, DEBUG_LOG_ENABLED,
     load_settings, get_api_key, get_custom_model,
     _resolve_base_url, _resolve_current_provider,
-    _get_context_output,
+    _get_context_output, is_cloud_provider, get_cloud_template_id,
 )
-from .provider_openai import _stream_openai_compat
+from .provider_openai import _stream_openai_compat, stream_cloud_chat
 from ..core.json_utils import repair_json_args
+from ..core.config import CLOUD_SERVER_URL
 
 try:
     from openai import AsyncOpenAI, OpenAI
@@ -31,6 +32,24 @@ async def test_connection(
     api_key_override: Optional[str] = None,
     base_url_override: Optional[str] = None,
 ) -> Tuple[bool, str]:
+    if is_cloud_provider(provider):
+        template_id = get_cloud_template_id(provider)
+        if template_id is None:
+            return False, "云端模型配置异常，请重新选择"
+        from ..core.cloud_auth import cloud_auth
+        token = cloud_auth.current_token()
+        if not token:
+            return False, "未登录，无法测试官方模型"
+        try:
+            async for ev in stream_cloud_chat(token, template_id, [{"role": "user", "content": "Hi"}], max_tokens=10):
+                if ev.get("type") == "error":
+                    return False, ev["content"]
+                if ev.get("type") == "text" and ev.get("content"):
+                    break
+            return True, "连接成功（云端代理）"
+        except Exception as e:
+            return False, f"云端连接失败: {str(e)[:100]}"
+
     settings = load_settings()
     api_key = api_key_override or get_api_key(provider, settings)
     if not api_key:
@@ -85,6 +104,25 @@ async def stream_response(
     settings = load_settings()
     provider = settings.get("provider", "")
     model = settings.get("model", "")
+
+    if is_cloud_provider(provider):
+        template_id = get_cloud_template_id(provider)
+        if template_id is None:
+            yield "⚠️ 云端模型配置异常，请重新选择。"
+            return
+        from ..core.cloud_auth import cloud_auth
+        token = cloud_auth.current_token()
+        if not token:
+            yield "⚠️ 未登录，请先登录后再使用官方模型。"
+            return
+        openai_messages = [{"role": "system", "content": system}] + messages
+        async for ev in stream_cloud_chat(token, template_id, openai_messages):
+            if ev["type"] == "text":
+                yield ev["content"]
+            elif ev["type"] == "error":
+                raise RuntimeError(ev["content"])
+        return
+
     api_key = get_api_key(provider, settings)
 
     if not api_key:
@@ -126,6 +164,23 @@ async def complete_response(system: str, messages: list) -> str:
 
 async def complete_response_with_provider(provider: str, model: str, system: str, messages: list, max_tokens: int = 300) -> str:
     """使用指定 provider+model 调用模型，返回完整文本。用于 AI 招呼语等非全局配置场景。"""
+    if is_cloud_provider(provider):
+        template_id = get_cloud_template_id(provider)
+        if template_id is None:
+            raise RuntimeError("云端模型配置异常")
+        from ..core.cloud_auth import cloud_auth
+        token = cloud_auth.current_token()
+        if not token:
+            raise RuntimeError("未登录，无法使用官方模型")
+        openai_messages = [{"role": "system", "content": system}] + messages
+        parts: list[str] = []
+        async for ev in stream_cloud_chat(token, template_id, openai_messages, max_tokens=max_tokens):
+            if ev["type"] == "text":
+                parts.append(ev["content"])
+            elif ev["type"] == "error":
+                raise RuntimeError(ev["content"])
+        return "".join(parts)
+
     settings = load_settings()
     api_key = get_api_key(provider, settings)
     if not api_key:
@@ -161,6 +216,39 @@ async def complete_response_with_provider(provider: str, model: str, system: str
 def complete_response_sync(system: str, messages: list, *, max_tokens: int = 8192, timeout: float = 600.0) -> str:
     """同步调用当前模型管理配置的模型，返回完整文本。供 resume_parser 等同步场景使用。"""
     settings = load_settings()
+    provider = settings.get("provider", "")
+
+    if is_cloud_provider(provider):
+        template_id = get_cloud_template_id(provider)
+        if template_id is None:
+            raise RuntimeError("云端模型配置异常")
+        from ..core.cloud_auth import cloud_auth
+        token = cloud_auth.current_token()
+        if not token:
+            raise RuntimeError("未登录，无法使用官方模型")
+        openai_messages = [{"role": "system", "content": system}] + messages
+
+        async def _do_cloud():
+            parts: list[str] = []
+            async for ev in stream_cloud_chat(token, template_id, openai_messages, max_tokens=max_tokens):
+                if ev["type"] == "text":
+                    parts.append(ev["content"])
+                elif ev["type"] == "error":
+                    raise RuntimeError(ev["content"])
+            return "".join(parts)
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # 无运行中的事件循环（纯同步/工作线程上下文）：直接新建循环执行
+            return asyncio.run(_do_cloud())
+        # 事件循环线程内被同步调用：提交到线程池用独立事件循环执行并阻塞等待。
+        # 必须用 pool.submit（concurrent Future 可阻塞等待）；不能用 loop.run_in_executor，
+        # 它返回 asyncio Future，pending 时 .result() 会抛 InvalidStateError
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(lambda: asyncio.run(_do_cloud())).result()
+
     base_url, api_key, model_id, provider_type = _resolve_current_provider(settings)
     ctx_out = _get_context_output(settings)
     max_tokens = min(max_tokens, ctx_out)
@@ -247,6 +335,31 @@ async def stream_with_tools(
     settings = load_settings()
     provider = settings.get("provider", "")
     model = settings.get("model", "")
+
+    if is_cloud_provider(provider):
+        template_id = get_cloud_template_id(provider)
+        if template_id is None:
+            yield {"type": "text", "content": "⚠️ 云端模型配置异常，请重新选择。"}
+            yield {"type": "done"}
+            return
+        from ..core.cloud_auth import cloud_auth
+        token = cloud_auth.current_token()
+        if not token:
+            yield {"type": "text", "content": "⚠️ 未登录，请先登录后再使用官方模型。"}
+            yield {"type": "done"}
+            return
+        openai_messages = [{"role": "system", "content": system}] + messages
+        try:
+            async for ev in stream_cloud_chat(token, template_id, openai_messages, max_tokens=max_tokens, tools=tools, tool_choice=tool_choice):
+                if ev["type"] == "error":
+                    yield {"type": "text", "content": ev["content"]}
+                else:
+                    yield ev
+        except Exception as e:
+            yield {"type": "text", "content": f"\n\n[云端调用失败: {str(e)[:200]}]"}
+        yield {"type": "done"}
+        return
+
     api_key = get_api_key(provider, settings)
 
     if not api_key:

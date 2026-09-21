@@ -1,6 +1,8 @@
 /** 简历 Agent 后端 API 封装（/agent 前缀） */
 // 开发环境（Vite dev server）使用相对路径走 proxy，避免系统代理拦截 localhost 请求
 // 生产环境（Electron）使用 preload 注入的绝对路径
+import { authHeaders, withTokenQuery } from './common';
+
 const isDev = location.port === '5173';
 const isElectron = !!(window as any).autoresume?.apiBase;
 const API_BASE = isDev ? '' : (isElectron ? (window as any).autoresume.apiBase : '');
@@ -124,13 +126,15 @@ export interface SettingsInfo {
     model: string;
   };
   custom_models: CustomModel[];
+  is_cloud?: boolean;
+  cloud_template_id?: number;
 }
 
 // ── Jobs ──
 
 export const agentApi = {
   async listJobs(): Promise<Job[]> {
-    const r = await fetch(`${AGENT}/jobs`);
+    const r = await fetch(`${AGENT}/jobs`, { headers: authHeaders() });
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
@@ -138,7 +142,7 @@ export const agentApi = {
   async createJob(data: Partial<Job>): Promise<Job> {
     const r = await fetch(`${AGENT}/jobs`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -148,7 +152,7 @@ export const agentApi = {
   async updateJob(id: number, data: Partial<Job>): Promise<Job> {
     const r = await fetch(`${AGENT}/jobs/${id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -156,7 +160,7 @@ export const agentApi = {
   },
 
   async deleteJob(id: number): Promise<void> {
-    const r = await fetch(`${AGENT}/jobs/${id}`, { method: 'DELETE' });
+    const r = await fetch(`${AGENT}/jobs/${id}`, { method: 'DELETE', headers: authHeaders() });
     if (!r.ok) throw new Error(await r.text());
   },
 
@@ -164,13 +168,13 @@ export const agentApi = {
 
   async listResumes(jobId?: number): Promise<Resume[]> {
     const params = jobId ? `?job_id=${jobId}` : '';
-    const r = await fetch(`${AGENT}/resumes${params}`);
+    const r = await fetch(`${AGENT}/resumes${params}`, { headers: authHeaders() });
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
 
   async getResume(id: number): Promise<Resume> {
-    const r = await fetch(`${AGENT}/resumes/${id}`);
+    const r = await fetch(`${AGENT}/resumes/${id}`, { headers: authHeaders() });
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
@@ -178,7 +182,7 @@ export const agentApi = {
   async createResume(data: { job_id: number; title?: string; content?: string; structured?: string; background_profile_id?: number; file_type?: string; file_size?: number }): Promise<Resume> {
     const r = await fetch(`${AGENT}/resumes`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -188,7 +192,7 @@ export const agentApi = {
   async generateResume(jobId: number, background: string, style?: string, accent?: string): Promise<Resume> {
     const r = await fetch(`${AGENT}/resumes/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ job_id: jobId, background, style: style || 'classic', accent: accent || '#2563eb' }),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -203,7 +207,7 @@ export const agentApi = {
   ): AsyncGenerator<{ type: string; content?: string; resume_id?: number }> {
     const r = await fetch(`${AGENT}/resumes/generate/stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ job_id: jobId, background, style: style || 'classic', accent: accent || '#2563eb' }),
     });
     if (!r.ok || !r.body) throw new Error(await r.text());
@@ -239,7 +243,7 @@ export const agentApi = {
   async createFromTemplate(jobId: number, template: string, accent?: string): Promise<Resume> {
     const r = await fetch(`${AGENT}/resumes/create-from-template`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ job_id: jobId, template, accent }),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -256,7 +260,7 @@ export const agentApi = {
   ): AsyncGenerator<{ type: string; content?: string; resume_id?: number }> {
     const r = await fetch(`${AGENT}/resumes/${resumeId}/restyle/stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         style,
         accent,
@@ -302,7 +306,7 @@ export const agentApi = {
   async updateResume(id: number, data: Partial<Resume>): Promise<Resume> {
     const r = await fetch(`${AGENT}/resumes/${id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -310,14 +314,14 @@ export const agentApi = {
   },
 
   async deleteResume(id: number): Promise<void> {
-    const r = await fetch(`${AGENT}/resumes/${id}`, { method: 'DELETE' });
+    const r = await fetch(`${AGENT}/resumes/${id}`, { method: 'DELETE', headers: authHeaders() });
     if (!r.ok) throw new Error(await r.text());
   },
 
   // ── Chat ──
 
   async getConversation(resumeId: number): Promise<{ id: number; messages: string } | null> {
-    const r = await fetch(`${AGENT}/chat/conversations/${resumeId}`);
+    const r = await fetch(`${AGENT}/chat/conversations/${resumeId}`, { headers: authHeaders() });
     if (r.status === 404) return null;
     if (!r.ok) throw new Error(await r.text());
     return r.json();
@@ -326,7 +330,7 @@ export const agentApi = {
   async saveConversation(resumeId: number, messages: ChatMessage[]): Promise<void> {
     await fetch(`${AGENT}/chat/conversations`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ resume_id: resumeId, messages }),
     });
   },
@@ -334,7 +338,7 @@ export const agentApi = {
   async rollbackSnapshot(resumeId: number, targetDepth: number): Promise<{ ok: boolean; message: string; popped: number; current_depth: number }> {
     const r = await fetch(`${AGENT}/chat/rollback`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ resume_id: resumeId, target_depth: targetDepth }),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -351,7 +355,7 @@ export const agentApi = {
   ): AsyncGenerator<{ type: 'text' | 'patch' | 'tool_call' | 'tool_result' | 'error' | 'done' | 'snapshot_depth' | 'retry'; content?: string; resumePartId?: string; newHtml?: string; toolName?: string; arguments?: any; result?: string; depth?: number }> {
     const r = await fetch(`${AGENT}/chat/stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ resume_id: resumeId, job_id: jobId, messages, user_background: userBackground }),
       signal,
     });
@@ -393,7 +397,7 @@ export const agentApi = {
 
   /** 获取简历磁盘文件最新内容 */
   async getResumeFile(resumeId: number): Promise<{ resume_id: number; html: string; path: string }> {
-    const r = await fetch(`${AGENT}/resumes/${resumeId}/file`);
+    const r = await fetch(`${AGENT}/resumes/${resumeId}/file`, { headers: authHeaders() });
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
@@ -401,12 +405,13 @@ export const agentApi = {
   /**
    * 内置浏览器预览（Electron webview）用：返回可加载简历原始 HTML 的绝对 URL。
    * dev 走 Vite 时 API_BASE 为空，需直接指向后端端口。
+   * webview 无法携带自定义请求头，令牌通过查询参数传递。
    */
   webviewResumeUrl(resumeId: number): string {
     const base = isDev
       ? 'http://127.0.0.1:8765'
       : (window as any).autoresume?.apiBase || '';
-    return `${base}${AGENT.replace(API_BASE, '')}/resumes/${resumeId}/resume.html`;
+    return withTokenQuery(`${base}${AGENT.replace(API_BASE, '')}/resumes/${resumeId}/resume.html`);
   },
 
   /** 订阅简历文件变更 WebSocket，返回关闭函数 */
@@ -415,9 +420,10 @@ export const agentApi = {
     onFileChange: (data: { type: string; resume_id: number; path: string }) => void,
   ): () => void {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = isDev
+    // WebSocket 无法携带自定义请求头，令牌通过查询参数传递
+    const wsUrl = withTokenQuery(isDev
       ? `${proto}//${location.host}${AGENT}/ws/resume/${resumeId}`
-      : `${API_BASE.replace(/^http/, 'ws')}${AGENT.replace(API_BASE, '')}/ws/resume/${resumeId}`;
+      : `${API_BASE.replace(/^http/, 'ws')}${AGENT.replace(API_BASE, '')}/ws/resume/${resumeId}`);
     let ws: WebSocket | null = null;
     let closed = false;
 
@@ -461,6 +467,7 @@ export const agentApi = {
     const params = new URLSearchParams({ job_id: String(jobId), accent: accent || '#2563eb' });
     const r = await fetch(`${AGENT}/uploads/upload-resume?${params}`, {
       method: 'POST',
+      headers: authHeaders(),
       body: fd,
       signal,
     });
@@ -483,6 +490,7 @@ export const agentApi = {
     const params = new URLSearchParams({ job_id: String(jobId), accent: accent || '#2563eb' });
     const r = await fetch(`${AGENT}/uploads/upload-resume/stream?${params}`, {
       method: 'POST',
+      headers: authHeaders(),
       body: fd,
     });
     if (!r.ok || !r.body) {
@@ -524,6 +532,7 @@ export const agentApi = {
     fd.append('file', file);
     const r = await fetch(`${AGENT}/uploads/parse-resume-background`, {
       method: 'POST',
+      headers: authHeaders(),
       body: fd,
     });
     if (!r.ok) throw new Error(await r.text());
@@ -535,6 +544,7 @@ export const agentApi = {
     fd.append('file', file);
     const r = await fetch(`${AGENT}/uploads/parse-resume-background/stream`, {
       method: 'POST',
+      headers: authHeaders(),
       body: fd,
     });
     if (!r.ok || !r.body) throw new Error(await r.text());
@@ -571,7 +581,8 @@ export const agentApi = {
 
   exportUrl(type: 'markdown' | 'pdf' | 'word', resumeId: number, extra?: string): string {
     const q = extra ? `?${extra}` : '';
-    return `${AGENT}/export/${type}/${resumeId}${q}`;
+    // 导出链接经 window.open 直接访问后端，无法携带自定义请求头，令牌走查询参数
+    return withTokenQuery(`${AGENT}/export/${type}/${resumeId}${q}`);
   },
 
   // ── Evaluation ──
@@ -584,7 +595,7 @@ export const agentApi = {
   }): Promise<Scorecard> {
     const r = await fetch(`${AGENT}/evaluation/scorecard`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -594,7 +605,7 @@ export const agentApi = {
   // ── Background Profiles ──
 
   async listBackgrounds(): Promise<BackgroundProfile[]> {
-    const r = await fetch(`${AGENT}/background/profiles`);
+    const r = await fetch(`${AGENT}/background/profiles`, { headers: authHeaders() });
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
@@ -602,7 +613,7 @@ export const agentApi = {
   async createBackground(data: { name: string; content: string }): Promise<BackgroundProfile> {
     const r = await fetch(`${AGENT}/background/profiles`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -612,7 +623,7 @@ export const agentApi = {
   async updateBackground(id: number, data: { name?: string; content?: string }): Promise<BackgroundProfile> {
     const r = await fetch(`${AGENT}/background/profiles/${id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -620,14 +631,14 @@ export const agentApi = {
   },
 
   async deleteBackground(id: number): Promise<void> {
-    const r = await fetch(`${AGENT}/background/profiles/${id}`, { method: 'DELETE' });
+    const r = await fetch(`${AGENT}/background/profiles/${id}`, { method: 'DELETE', headers: authHeaders() });
     if (!r.ok) throw new Error(await r.text());
   },
 
   // ── Settings ──
 
   async getSettings(): Promise<SettingsInfo> {
-    const r = await fetch(`${AGENT}/settings`);
+    const r = await fetch(`${AGENT}/settings`, { headers: authHeaders() });
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
@@ -642,7 +653,7 @@ export const agentApi = {
   }): Promise<void> {
     const r = await fetch(`${AGENT}/settings`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -651,7 +662,7 @@ export const agentApi = {
   async testConnection(provider: string, model: string, apiKey?: string, baseUrl?: string): Promise<{ success: boolean; message: string }> {
     const r = await fetch(`${AGENT}/settings/test`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ provider, model, api_key: apiKey, base_url: baseUrl }),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -675,7 +686,7 @@ export const agentApi = {
   }): Promise<CustomModel> {
     const r = await fetch(`${AGENT}/settings/custom-models`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -683,7 +694,7 @@ export const agentApi = {
   },
 
   async deleteCustomModel(modelId: string): Promise<void> {
-    const r = await fetch(`${AGENT}/settings/custom-models/${modelId}`, { method: 'DELETE' });
+    const r = await fetch(`${AGENT}/settings/custom-models/${modelId}`, { method: 'DELETE', headers: authHeaders() });
     if (!r.ok) throw new Error(await r.text());
   },
 
@@ -706,7 +717,7 @@ export const agentApi = {
   }): Promise<CustomModel> {
     const r = await fetch(`${AGENT}/settings/custom-models/${modelId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -734,7 +745,7 @@ export const agentApi = {
   }> {
     const r = await fetch(`${AGENT}/settings/test-custom-model`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -744,7 +755,7 @@ export const agentApi = {
   async batchCreateJobs(jobs: { title: string; content: string }[]): Promise<Job[]> {
     const r = await fetch(`${AGENT}/jobs/batch`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ jobs }),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -752,7 +763,7 @@ export const agentApi = {
   },
 
   async listGreetedRecent(days: number = 3): Promise<GreetedItem[]> {
-    const r = await fetch(`${API_BASE}/api/tasks/greeted-recent?days=${days}`);
+    const r = await fetch(`${API_BASE}/api/tasks/greeted-recent?days=${days}`, { headers: authHeaders() });
     if (!r.ok) throw new Error(await r.text());
     const data = await r.json();
     return data.items || [];
@@ -761,7 +772,7 @@ export const agentApi = {
   async batchDeleteGreeted(ids: number[]): Promise<{ ok: boolean; deleted: number }> {
     const r = await fetch(`${API_BASE}/api/tasks/greeted-batch-delete`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ ids }),
     });
     if (!r.ok) throw new Error(await r.text());

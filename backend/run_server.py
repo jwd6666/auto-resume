@@ -46,4 +46,7 @@ import uvicorn  # noqa: E402  — 必须在环境变量设置之后再 import
 
 if __name__ == "__main__":
     port = int(os.environ.get("AUTORESUME_PORT", "8765"))
+    from app.core.config import CLOUD_SERVER_URL
+
+    print(f"[sidecar] CLOUD_SERVER_URL={CLOUD_SERVER_URL}", flush=True)
     uvicorn.run("app.main:app", host="127.0.0.1", port=port, log_level="info")

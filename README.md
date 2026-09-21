@@ -248,6 +248,7 @@ BOSS 前端会改 DOM。`backend/app/services/boss_automator.py` 里的选择器
 ### 7.1 Windows（在 Windows 上）
 
 ```powershell
+$env:AUTORESUME_CLOUD_URL="https://agentht.jwdo.top"
 $env:CSC_IDENTITY_AUTO_DISCOVERY="false"
 npm run dist:win
 ```

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Cpu, ChevronDown, Settings, Loader2, Check, Zap } from 'lucide-react';
+import { Cpu, ChevronDown, Settings, Loader2, Check, Zap, Shield } from 'lucide-react';
 import { agentApi, type SettingsInfo, type CustomModel } from '../../api/agentApi';
+import { authApi } from '../../api/authApi';
 
 interface ProviderConfig {
   name: string;
@@ -14,6 +15,7 @@ interface ProviderConfig {
 
 export function ModelSelector() {
   const [settings, setSettings] = useState<SettingsInfo | null>(null);
+  const [cloudTemplates, setCloudTemplates] = useState<any[]>([]);
   const [open, setOpen] = useState(false);
   const [selProvider, setSelProvider] = useState('');
   const [selModel, setSelModel] = useState('');
@@ -25,6 +27,7 @@ export function ModelSelector() {
       setSelProvider(s.provider);
       setSelModel(s.model);
     }).catch(() => {});
+    authApi.cloudModels().then(t => setCloudTemplates(t)).catch(() => {});
   }, []);
 
   const save = async (provider: string, model: string) => {
@@ -55,6 +58,11 @@ export function ModelSelector() {
   const customModels: CustomModel[] = settings.custom_models || [];
 
   const getLabel = () => {
+    if (selProvider.startsWith('cloud:')) {
+      const tid = parseInt(selProvider.split(':')[1]);
+      const tpl = cloudTemplates.find(t => t.id === tid);
+      return `官方 · ${tpl?.display_name || tpl?.model_id || `#${tid}`}`;
+    }
     if (selProvider.startsWith('custom:')) {
       const cm = customModels.find(c => `custom:${c.id}` === selProvider);
       return `自定义 · ${cm?.display_name || cm?.model_id || selModel}`;
@@ -67,7 +75,9 @@ export function ModelSelector() {
     return `${p?.name_cn || selProvider} · ${modelName}`;
   };
 
-  const hasKey = selProvider.startsWith('custom:') || selProvider === 'custom'
+  const hasKey = selProvider.startsWith('cloud:')
+    ? true
+    : selProvider.startsWith('custom:') || selProvider === 'custom'
     ? true
     : !!settings.api_keys_set[selProvider];
 
@@ -133,6 +143,35 @@ export function ModelSelector() {
                   </div>
                 );
               })}
+
+              {cloudTemplates.length > 0 && (
+                <>
+                  <div className="px-2 py-1.5 text-[11px] font-medium text-emerald-400/80 uppercase tracking-wider flex items-center gap-1.5 mt-1">
+                    <Shield size={10} /> 官方模型（云端代理）
+                  </div>
+                  {cloudTemplates.map(tpl => {
+                    const cloudKey = `cloud:${tpl.id}`;
+                    const selected = selProvider === cloudKey;
+                    return (
+                      <button
+                        key={cloudKey}
+                        onClick={() => { save(cloudKey, tpl.model_id); setOpen(false); }}
+                        className={`w-full text-left px-3 py-1.5 rounded-md text-xs flex items-center gap-2 transition-colors ${
+                          selected
+                            ? 'bg-emerald-500/15 text-emerald-400'
+                            : 'text-slate-300 hover:bg-surface-700/40'
+                        }`}
+                      >
+                        {selected && <Check size={11} className="shrink-0" />}
+                        <span className={`truncate ${selected ? '' : 'ml-3.5'}`}>{tpl.display_name || tpl.model_id}</span>
+                        {tpl.multimodal && (
+                          <span className="text-[9px] px-1 py-0.5 rounded bg-accent-purple/15 text-accent-purple shrink-0">多模态</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </>
+              )}
 
               {customModels.length > 0 && (
                 <>

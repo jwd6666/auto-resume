@@ -5,6 +5,7 @@ import Image from '@tiptap/extension-image';
 import { Send, Sparkles, Loader2, ClipboardCheck, AlertTriangle, Gauge, Star, ChevronDown, ChevronUp, X, Check, Cpu, ImagePlus, StopCircle, MessageSquarePlus, Undo2, UserCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { agentApi, type ChatMessage, type Job, type Resume, type RefChip, type Scorecard, type HtmlPatch } from '../../api/agentApi';
+import { authApi } from '../../api/authApi';
 import { DomTag } from './editor/DomTagExtension';
 import { AssistantMessageRenderer } from './AssistantMessageRenderer';
 
@@ -350,12 +351,26 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
           hasKey: true,
         });
       }
-      setModelOptions(opts.filter(o => o.hasKey || (o.providerKey === s.provider && o.modelId === s.model)));
+      authApi.cloudModels().then(templates => {
+        for (const tpl of templates) {
+          opts.push({
+            providerKey: `cloud:${tpl.id}`,
+            modelId: tpl.model_id,
+            label: `官方 · ${tpl.display_name || tpl.model_id}`,
+            hasKey: true,
+          });
+        }
+        setModelOptions(opts.filter(o => o.hasKey || (o.providerKey === s.provider && o.modelId === s.model)));
+        const current = opts.find(o => o.providerKey === s.provider && o.modelId === s.model);
+        setSelectedLabel(current?.label || s.model);
+      }).catch(() => {
+        setModelOptions(opts.filter(o => o.hasKey || (o.providerKey === s.provider && o.modelId === s.model)));
+        const current = opts.find(o => o.providerKey === s.provider && o.modelId === s.model);
+        setSelectedLabel(current?.label || s.model);
+      });
       selectedProviderRef.current = s.provider;
       selectedModelRef.current = s.model;
-      const current = opts.find(o => o.providerKey === s.provider && o.modelId === s.model);
-      setSelectedLabel(current?.label || s.model);
-      const hasKey = s.provider.startsWith('custom:') || s.provider === 'custom'
+      const hasKey = s.provider.startsWith('cloud:') || s.provider.startsWith('custom:') || s.provider === 'custom'
         ? true
         : !!s.api_keys_set[s.provider];
       setModelReady(hasKey);
@@ -865,22 +880,37 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
                 <div className="fixed inset-0 z-40" onClick={() => setModelDropdownOpen(false)} />
                 <div className="absolute left-0 bottom-full mb-1 z-50 w-full max-h-64 overflow-y-auto scrollbar-thin bg-surface-800 rounded-lg border border-slate-700/50 shadow-2xl animate-fade-in">
                   <div className="p-1 space-y-0.5">
-                    {modelOptions.map((opt) => {
-                      const isActive = selectedProviderRef.current === opt.providerKey && selectedModelRef.current === opt.modelId;
-                      return (
-                        <button
-                          key={`${opt.providerKey}-${opt.modelId}`}
-                          onClick={() => handleModelSelect(opt)}
-                          className={`w-full text-left px-2.5 py-1.5 rounded-md text-xs flex items-center gap-1.5 transition-colors ${
-                            isActive ? 'bg-accent-blue/15 text-accent-blue' : 'text-slate-300 hover:bg-surface-700/40'
-                          }`}
-                        >
-                          {isActive && <Check size={10} className="shrink-0" />}
-                          <span className={`truncate ${isActive ? '' : 'ml-3.5'}`}>{opt.label}</span>
-                          {!opt.hasKey && <span className="text-[9px] text-slate-600 shrink-0 ml-auto">未配置</span>}
-                        </button>
-                      );
-                    })}
+                    {Object.entries(
+                      modelOptions.reduce((acc, opt) => {
+                        const providerName = opt.label.split(' · ')[0];
+                        if (!acc[providerName]) acc[providerName] = [];
+                        acc[providerName].push(opt);
+                        return acc;
+                      }, {} as Record<string, ModelOption[]>)
+                    ).map(([providerName, opts]) => (
+                      <div key={providerName}>
+                        <div className={`px-2 py-1 text-[10px] font-medium uppercase tracking-wider ${providerName === '官方' ? 'text-emerald-400/80' : 'text-slate-500'}`}>
+                          {providerName === '官方' ? '🛡 官方模型（云端代理）' : providerName}
+                        </div>
+                        {opts.map(opt => {
+                          const isActive = selectedProviderRef.current === opt.providerKey && selectedModelRef.current === opt.modelId;
+                          return (
+                            <button
+                              key={`${opt.providerKey}-${opt.modelId}`}
+                              onClick={() => handleModelSelect(opt)}
+                              className={`w-full text-left px-2.5 py-1.5 rounded-md text-xs flex items-center gap-1.5 transition-colors ${
+                                opt.providerKey.startsWith('cloud:') && isActive ? 'bg-emerald-500/15 text-emerald-400' :
+                                isActive ? 'bg-accent-blue/15 text-accent-blue' : 'text-slate-300 hover:bg-surface-700/40'
+                              }`}
+                            >
+                              {isActive && <Check size={10} className="shrink-0" />}
+                              <span className={`truncate ${isActive ? '' : 'ml-3.5'}`}>{opt.label.split(' · ').slice(1).join(' · ') || opt.label}</span>
+                              {!opt.hasKey && <span className="text-[9px] text-slate-600 shrink-0 ml-auto">未配置</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ))}
                     {modelOptions.length === 0 && (
                       <p className="text-xs text-slate-500 px-2.5 py-2">暂无可用模型</p>
                     )}

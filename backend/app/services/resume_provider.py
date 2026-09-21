@@ -28,6 +28,8 @@ from .provider_settings import (
     _get_context_input,
     _get_context_output,
     is_current_model_multimodal,
+    is_cloud_provider,
+    get_cloud_template_id,
 )
 
 from .provider_anthropic import (

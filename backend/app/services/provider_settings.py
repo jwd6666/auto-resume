@@ -13,6 +13,7 @@ DEBUG_LOG_ENABLED = False
 PROVIDERS: dict = {}
 
 CUSTOM_PROVIDER_KEY = "custom"
+CLOUD_PROVIDER_PREFIX = "cloud:"
 
 
 def _settings_file_path() -> str:
@@ -41,6 +42,7 @@ _DEFAULT_SETTINGS = {
         "model": "",
     },
     "custom_models": [],
+    "cloud_models": [],
 }
 
 
@@ -172,6 +174,10 @@ def _resolve_base_url(cm: dict) -> str:
 def _resolve_current_provider(settings: dict) -> Tuple[str, str, str, str]:
     provider = settings.get("provider", "")
     model = settings.get("model", "")
+
+    if is_cloud_provider(provider):
+        return "", "", "", "cloud"
+
     api_key = get_api_key(provider, settings)
 
     if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
@@ -187,6 +193,8 @@ def _resolve_current_provider(settings: dict) -> Tuple[str, str, str, str]:
 
 def _get_context_input(settings: dict) -> int:
     provider = settings.get("provider", "")
+    if is_cloud_provider(provider):
+        return 128000
     if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
         cm = get_custom_model(provider, settings)
         if cm:
@@ -197,6 +205,8 @@ def _get_context_input(settings: dict) -> int:
 
 def _get_context_output(settings: dict) -> int:
     provider = settings.get("provider", "")
+    if is_cloud_provider(provider):
+        return 8192
     if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
         cm = get_custom_model(provider, settings)
         if cm:
@@ -206,7 +216,29 @@ def _get_context_output(settings: dict) -> int:
 
 def is_current_model_multimodal(settings: dict) -> bool:
     provider = settings.get("provider", "")
+    if is_cloud_provider(provider):
+        # 云端模板：查 /api/auth/cloud-models 拉取时缓存的模板信息（含 multimodal 标记）
+        template_id = get_cloud_template_id(provider)
+        if template_id is None:
+            return False
+        for tpl in settings.get("cloud_models", []):
+            if isinstance(tpl, dict) and tpl.get("id") == template_id:
+                return bool(tpl.get("multimodal"))
+        return False
     if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
         cm = get_custom_model(provider, settings)
         return bool(cm and cm.get("multimodal"))
     return False
+
+
+def is_cloud_provider(provider: str) -> bool:
+    return provider.startswith(CLOUD_PROVIDER_PREFIX)
+
+
+def get_cloud_template_id(provider: str) -> int | None:
+    if not is_cloud_provider(provider):
+        return None
+    try:
+        return int(provider.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return None

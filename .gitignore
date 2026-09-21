@@ -28,6 +28,7 @@ backend/logs/
 backend/app/services/ai_settings.json
 backend/app/services/*.env
 backend/app/services/*.key
+.env
 
 # 简历样本和导出文件（含个人隐私）
 *.html
@@ -49,3 +50,5 @@ release/
 .electron-cache/
 backend/dist/
 *.tsbuildinfo
+# 构建期生成的云端地址配置（每次打包按环境变量覆盖）
+electron/cloud-config.json

@@ -30,3 +30,20 @@ DEFAULT_DAILY_LIMIT = 10
 DEFAULT_CLICK_DELAY_SECONDS = 5  # 点开左侧岗位 → 等多久 → 点右侧「立即沟通」
 BOSS_HOME = "https://www.zhipin.com/"
 BOSS_SEARCH_URL = "https://www.zhipin.com/web/geek/job"
+
+# 云端管控服务器地址：开发环境 → 本地；生产环境（Electron 打包注入） → 云端
+# 环境变量优先，未设置时根据是否由 sidecar 注入 API_TOKEN 判断环境
+_api_token = os.environ.get("AUTORESUME_API_TOKEN", "")
+if os.environ.get("AUTORESUME_CLOUD_URL"):
+    CLOUD_SERVER_URL = os.environ["AUTORESUME_CLOUD_URL"]
+elif _api_token:
+    CLOUD_SERVER_URL = "https://agentht.jwdo.top"
+else:
+    CLOUD_SERVER_URL = "http://127.0.0.1:8000"
+
+# 本地 sidecar 访问令牌：Electron 主进程每次启动随机生成并经环境变量注入。
+# 为空表示开发模式（uvicorn 手动启动），此时跳过令牌校验。
+API_TOKEN: str = os.environ.get("AUTORESUME_API_TOKEN", "")
+
+# 应用版本号（Electron 打包时注入 package.json 的 version，用于更新检查对比）
+APP_VERSION = os.environ.get("AUTORESUME_APP_VERSION", "0.0.0-dev")

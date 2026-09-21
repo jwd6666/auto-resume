@@ -26,6 +26,8 @@ interface Props {
   onUpdate?: (model: CustomModelData) => void;
   /** 编辑模式初始数据（含 id）；提供则进入编辑模式 */
   editData?: { id: string } & Partial<CustomModelData>;
+  /** 预填充数据（云端模板导入）；仍为添加模式，但表单预填充 */
+  prefilledData?: CustomModelData;
 }
 
 const DEFAULTS: CustomModelData = {
@@ -58,19 +60,17 @@ const MODEL_SERIES = [
   { value: 'deepseek', label: 'DeepSeek 系列' },
 ];
 
-export function AddModelModal({ onClose, onAdd, onUpdate, editData }: Props) {
+export function AddModelModal({ onClose, onAdd, onUpdate, editData, prefilledData }: Props) {
   const isEdit = !!editData;
   // 初始化表单：编辑模式用 editData 覆盖默认值，api_key 始终置空（编辑时留空=保留原值）
+  // 预填充模式用 prefilledData 覆盖默认值
   const [form, setForm] = useState<CustomModelData>(() => {
-    if (!editData) return { ...DEFAULTS };
-    return {
-      ...DEFAULTS,
-      ...editData,
-      api_key: '',  // 编辑模式不回显密钥，留空表示保留原值
-    };
+    if (editData) return { ...DEFAULTS, ...editData, api_key: '' };
+    if (prefilledData) return { ...DEFAULTS, ...prefilledData };
+    return { ...DEFAULTS };
   });
   const [showKey, setShowKey] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(!!editData && !!(editData.model_series || editData.display_name || editData.tool_call_rounds));
+  const [showAdvanced, setShowAdvanced] = useState(!!editData && !!(editData.model_series || editData.display_name || editData.tool_call_rounds) || !!prefilledData);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState(false);
   const [testError, setTestError] = useState<string>('');

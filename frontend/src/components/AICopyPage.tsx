@@ -6,6 +6,8 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { agentApi, type SettingsInfo, type CustomModel } from '../api/agentApi';
+import { authApi } from '../api/authApi';
+import { authHeaders } from '../api/common';
 import { PersonalInfoModal, loadPersonalInfo, buildPersonalInfoText } from './PersonalInfoModal';
 
 const isDev = location.port === '5173';
@@ -66,6 +68,7 @@ async function parseJdImage(file: File): Promise<JdParseResult> {
   fd.append('file', file);
   const r = await fetch(`${AGENT}/greeting-generator/parse-jd-image`, {
     method: 'POST',
+    headers: authHeaders(),
     body: fd,
   });
   if (!r.ok) {
@@ -86,7 +89,7 @@ async function generateGreetings(params: {
 }): Promise<{ greetings: GreetingItem[]; suggestions: { icon: string; title: string; description: string }[] }> {
   const r = await fetch(`${AGENT}/greeting-generator/generate`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(params),
   });
   if (!r.ok) {
@@ -149,12 +152,21 @@ export function AICopyPage() {
           hasKey: true,
         });
       }
-      setModelOptions(opts.filter(o => o.hasKey || (o.providerKey === s.provider && o.modelId === s.model)));
+      authApi.cloudModels().then(templates => {
+        for (const tpl of templates) {
+          opts.push({ providerKey: `cloud:${tpl.id}`, modelId: tpl.model_id, label: `官方 · ${tpl.display_name || tpl.model_id}`, hasKey: true });
+        }
+        setModelOptions(opts.filter(o => o.hasKey || (o.providerKey === s.provider && o.modelId === s.model)));
+        const current = opts.find(o => o.providerKey === s.provider && o.modelId === s.model);
+        setSelectedLabel(current?.label || s.model);
+      }).catch(() => {
+        setModelOptions(opts.filter(o => o.hasKey || (o.providerKey === s.provider && o.modelId === s.model)));
+        const current = opts.find(o => o.providerKey === s.provider && o.modelId === s.model);
+        setSelectedLabel(current?.label || s.model);
+      });
       selectedProviderRef.current = s.provider;
       selectedModelRef.current = s.model;
-      const current = opts.find(o => o.providerKey === s.provider && o.modelId === s.model);
-      setSelectedLabel(current?.label || s.model);
-      const hasKey = s.provider.startsWith('custom:') || s.provider === 'custom'
+      const hasKey = s.provider.startsWith('cloud:') || s.provider.startsWith('custom:') || s.provider === 'custom'
         ? true
         : !!s.api_keys_set[s.provider];
       setModelReady(hasKey);
@@ -355,8 +367,8 @@ export function AICopyPage() {
                       }, {} as Record<string, ModelOption[]>)
                     ).map(([providerName, opts]) => (
                       <div key={providerName}>
-                        <div className="px-2 py-1.5 text-[11px] font-medium text-slate-500 uppercase tracking-wider">
-                          {providerName}
+                        <div className={`px-2 py-1.5 text-[11px] font-medium uppercase tracking-wider ${providerName === '官方' ? 'text-emerald-400/80' : 'text-slate-500'}`}>
+                          {providerName === '官方' ? '🛡 官方模型（云端代理）' : providerName}
                         </div>
                         {opts.map(opt => {
                           const isActive = selectedProviderRef.current === opt.providerKey && selectedModelRef.current === opt.modelId;
@@ -366,6 +378,7 @@ export function AICopyPage() {
                               onClick={() => { handleModelSelect(opt); setModelDropdownOpen(false); }}
                               className={clsx(
                                 'w-full text-left px-3 py-1.5 rounded-md text-xs flex items-center gap-1.5 transition-colors',
+                                opt.providerKey.startsWith('cloud:') && isActive ? 'bg-emerald-500/15 text-emerald-400' :
                                 isActive ? 'bg-accent-blue/15 text-accent-blue' : 'text-slate-300 hover:bg-surface-700/40',
                               )}
                             >

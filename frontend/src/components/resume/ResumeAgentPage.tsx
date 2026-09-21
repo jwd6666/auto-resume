@@ -246,6 +246,9 @@ export function ResumeAgentPage() {
               <span className="text-xs px-1.5 py-0.5 rounded bg-accent-blue/20 text-accent-blue font-normal">AI修改</span>
             </h1>
             <p className="text-sm text-slate-500 mt-0.5">AI一键生成简历 → 智能修改 → 导出</p>
+            <p className="text-[11px] text-amber-400/70 mt-0.5">
+              提示：生成/修改简历时，你的简历与岗位内容会发送给当前所选的 AI 模型服务商处理。
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-3">

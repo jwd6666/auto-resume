@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus } from 'lucide-react';
+import { Plus, Loader2 } from 'lucide-react';
 import { TopNav } from './components/TopNav';
 import { Sidebar } from './components/Sidebar';
 import { WelcomeBanner } from './components/WelcomeBanner';
@@ -11,12 +11,20 @@ import { QuickActions } from './components/QuickActions';
 import { NewTaskModal } from './components/NewTaskModal';
 import { TaskCard } from './components/TaskCard';
 import { ModelManagement } from './components/ModelManagement';
+import { LoginPage } from './components/LoginPage';
+import { UpdateBanner } from './components/UpdateBanner';
+import { ForceUpdateGate } from './components/ForceUpdateGate';
+import { SystemSettingsPage } from './components/SystemSettingsPage';
 import { ResumeAgentPage } from './components/resume/ResumeAgentPage';
 import { AICopyPage } from './components/AICopyPage';
 import { JobAnalysisPage } from './components/JobAnalysisPage';
 import { JobManagePage } from './components/JobManagePage';
 import { api, type TaskInfo } from './api/client';
+import { authApi } from './api/authApi';
+import { updateApi, type UpdateStatus } from './api/updateApi';
 import { useTasks } from './store/useTasks';
+
+type AuthPhase = 'checking' | 'guest' | 'active' | 'banned';
 
 export default function App() {
   const { tasks, loading, refresh, selectedId, select, upsert } = useTasks();
@@ -25,17 +33,68 @@ export default function App() {
   const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState<TaskInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [authPhase, setAuthPhase] = useState<AuthPhase>('checking');
+  const [banReason, setBanReason] = useState<string | null>(null);
+  const [userAccount, setUserAccount] = useState<string | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [updateDismissed, setUpdateDismissed] = useState(false);
+  const [skipped, setSkipped] = useState(false);
+  const canUseApp = authPhase === 'active' || (authPhase === 'guest' && skipped);
+
+  // 启动 + 轮询鉴权状态：未登录/被封禁时锁定在登录页
+  useEffect(() => {
+    let alive = true;
+    const check = async () => {
+      try {
+        const s = await authApi.status();
+        if (!alive) return;
+        if (s.status === 'active') {
+          setAuthPhase('active');
+          setBanReason(null);
+          setUserAccount(s.user?.account ?? null);
+        } else if (s.status === 'banned') {
+          setAuthPhase('banned');
+          setBanReason(s.ban_reason);
+        } else {
+          setAuthPhase('guest');
+          setBanReason(null);
+        }
+      } catch {
+        /* sidecar 未就绪时保持 checking，显示加载页 */
+      }
+    };
+    check();
+    const t = setInterval(check, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
 
   useEffect(() => {
+    if (!canUseApp) return;
     refresh().catch((e) => setError(`后端连接失败：${e.message}`));
     const t = setInterval(() => { refresh().catch(() => {}); }, 5000);
     return () => clearInterval(t);
-  }, [refresh]);
+  }, [refresh, canUseApp]);
+
+  // 登录后轮询更新状态（60s），sidecar 已缓存云端结果，本地接口开销极小
+  useEffect(() => {
+    if (!canUseApp) return;
+    const poll = () => updateApi.check().then(setUpdateStatus).catch(() => {});
+    poll();
+    const t = setInterval(poll, 60000);
+    return () => clearInterval(t);
+  }, [canUseApp]);
 
   useEffect(() => {
     const handler = () => setActiveMenu('accounts');
     window.addEventListener('navigate-model-management', handler);
     return () => window.removeEventListener('navigate-model-management', handler);
+  }, []);
+
+  // 模型管理页等发出的「前往登录」请求：回到登录页
+  useEffect(() => {
+    const handler = () => setSkipped(false);
+    window.addEventListener('request-login', handler);
+    return () => window.removeEventListener('request-login', handler);
   }, []);
 
   const selected = tasks.find((t) => t.id === selectedId) ?? null;
@@ -161,14 +220,71 @@ export default function App() {
       case 'ai-copy': return null;
       case 'job-manage': return <JobManagePage />;
       case 'job-analysis': return null;
-      case 'system-settings': return renderPlaceholder('系统设置', '配置账号与偏好');
+      case 'system-settings': return <SystemSettingsPage userAccount={userAccount} />;
       default: return renderHome();
     }
   };
 
+  // 鉴权门卫：检查中 / 未登录 / 被封禁时只渲染登录相关界面
+  if (authPhase === 'checking') {
+    return (
+      <div className="h-full flex flex-col items-center justify-center bg-surface-850 gap-3">
+        <Loader2 size={28} className="animate-spin text-brand-400" />
+        <p className="text-sm text-slate-500">正在连接服务...</p>
+      </div>
+    );
+  }
+
+  if (authPhase === 'banned') {
+    return (
+      <LoginPage
+        initialStatus="banned"
+        banReason={banReason}
+        onLoggedIn={() => setAuthPhase('active')}
+      />
+    );
+  }
+
+  if (authPhase === 'guest' && !skipped) {
+    return (
+      <LoginPage
+        initialStatus="not_logged_in"
+        banReason={banReason}
+        onLoggedIn={() => { setAuthPhase('active'); setSkipped(false); }}
+        onSkip={() => setSkipped(true)}
+      />
+    );
+  }
+
+  // 强制更新：拦截整个应用，仅允许前往下载，无法关闭
+  const forceUpdate = updateStatus?.should_prompt && updateStatus.force ? updateStatus.latest : null;
+  if (forceUpdate) {
+    return (
+      <ForceUpdateGate update={forceUpdate} currentVersion={updateStatus?.current_version ?? ''} />
+    );
+  }
+
   return (
     <div className="h-full flex flex-col bg-surface-850">
-      <TopNav />
+      <TopNav
+        userAccount={userAccount}
+        onLoggedOut={() => { setAuthPhase('guest'); setUserAccount(null); setSkipped(false); }}
+        onLogin={() => setSkipped(false)}
+        onOpenSettings={() => setActiveMenu('system-settings')}
+      />
+      {/* 更新提示横幅（非强制）：可点击 X 本次关闭；强制更新由 ForceUpdateGate 拦截 */}
+      {updateStatus?.should_prompt && updateStatus.latest && !updateDismissed && (
+        <UpdateBanner
+          update={updateStatus.latest}
+          force={updateStatus.force}
+          currentVersion={updateStatus.current_version}
+          onSkip={async (version) => {
+            await updateApi.skipVersion(version).catch(() => {});
+            setUpdateStatus((s) => (s ? { ...s, should_prompt: false, skipped_version: version } : s));
+          }}
+          onDismiss={() => setUpdateDismissed(true)}
+        />
+      )}
       {error && (
         <div className="px-5 py-2 bg-red-500/20 text-red-300 text-sm border-b border-red-500/30">
           {error}

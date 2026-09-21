@@ -35,6 +35,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer
 
+from ..core.config import DATA_DIR
 from ..services.resume_db import get_db
 from ..schemas import resume_models as models
 from ..schemas import resume_schemas as schemas
@@ -44,6 +45,7 @@ from ..services.resume_provider import (
     add_custom_model, delete_custom_model, update_custom_model,
     get_custom_model, CUSTOM_PROVIDER_KEY, sse_with_heartbeat,
 )
+from ..services.provider_settings import is_cloud_provider, get_cloud_template_id
 from ..services.resume_parser import parse_resume_pdf_to_background, stream_resume_pdf_to_background
 from ..services.resume_html import (
     normalize_structured, structured_to_text, ACCENTS,
@@ -68,7 +70,13 @@ router = APIRouter(tags=["resume-agent"])
 
 
 # ── 数据文件路径 ──────────────────────────────────────────────
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+_LEGACY_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+_legacy_models = _LEGACY_DATA_DIR / "competency_models.json"
+_current_models = DATA_DIR / "competency_models.json"
+if _legacy_models.exists() and not _current_models.exists():
+    import shutil
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(_legacy_models, _current_models)
 
 
 class GenerateResumeRequest(BaseModel):
@@ -352,6 +360,12 @@ async def _ai_vl_extract_from_pdf(pdf_bytes: bytes) -> str:
 
 def _ocr_from_image(content: bytes) -> str:
     """图片：交给多模态 LLM 完成文本提取（不使用本地 OCR 库）。"""
+    from ..services.resume_provider import complete_response_sync, is_current_model_multimodal
+    if not is_current_model_multimodal(load_settings()):
+        raise HTTPException(
+            status_code=400,
+            detail="图片识别需要多模态模型。请在「模型管理」中选择支持多模态的模型。",
+        )
     import base64
     b64 = base64.b64encode(content).decode("ascii")
     from PIL import Image
@@ -367,7 +381,6 @@ def _ocr_from_image(content: bytes) -> str:
             ],
         }
     ]
-    from ..services.resume_provider import complete_response_sync
     try:
         out = complete_response_sync(
             "你是简历文字识别助手。请完整准确地识别用户提供的简历图片中的所有文字，保持原始结构，不编造、不遗漏。",
@@ -1480,11 +1493,10 @@ def export_word(
 @router.get("/settings")
 def get_settings():
     settings = load_settings()
-    # 本应用仅支持自定义模型，无内置厂商的 api_key
     masked = {}
     custom_cfg = settings.get("custom", {})
+    provider = settings.get("provider", "")
 
-    # 多自定义模型列表（脱敏后返回前端）
     custom_models_masked = []
     for cm in settings.get("custom_models", []):
         item = dict(cm)
@@ -1492,9 +1504,9 @@ def get_settings():
         item.pop("api_key", None)
         custom_models_masked.append(item)
 
-    return {
-        "provider": settings["provider"],
-        "model": settings["model"],
+    result = {
+        "provider": provider,
+        "model": settings.get("model", ""),
         "api_keys_set": masked,
         "providers": PROVIDERS,
         "custom": {
@@ -1504,6 +1516,12 @@ def get_settings():
         },
         "custom_models": custom_models_masked,
     }
+
+    if is_cloud_provider(provider):
+        result["is_cloud"] = True
+        result["cloud_template_id"] = get_cloud_template_id(provider)
+
+    return result
 
 
 @router.post("/settings/custom-models")
@@ -1705,7 +1723,8 @@ async def parse_resume_background(file: UploadFile = File(...)):
     if not content:
         raise HTTPException(status_code=400, detail="上传文件为空")
 
-    text, parser, warning = parse_resume_pdf_to_background(content)
+    # 内部会同步调用云端模型，放线程池避免阻塞事件循环
+    text, parser, warning = await asyncio.to_thread(parse_resume_pdf_to_background, content)
     return ParseResumeBackgroundResponse(
         filename=file.filename or "resume.pdf",
         text=text,
@@ -1742,7 +1761,7 @@ async def parse_job(file: UploadFile = File(...)):
     if not content:
         raise HTTPException(status_code=400, detail="上传文件为空")
     try:
-        text, _ = extract_text_from_file(file.filename or "", content)
+        text, _ = await asyncio.to_thread(extract_text_from_file, file.filename or "", content)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"JD解析失败: {exc}") from exc
     if not text:
@@ -1774,9 +1793,9 @@ async def upload_resume(
     if not content_bytes:
         raise HTTPException(status_code=400, detail="上传文件为空")
 
-    # Step 1: 提取文本
+    # Step 1: 提取文本（图片路径会同步调用模型，放线程池避免阻塞事件循环）
     try:
-        text, parser = extract_text_from_file(file.filename or "", content_bytes)
+        text, parser = await asyncio.to_thread(extract_text_from_file, file.filename or "", content_bytes)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"文件解析失败: {exc}") from exc
 
@@ -1867,9 +1886,9 @@ async def upload_resume_stream(
     filename = file.filename or ""
 
     async def _stream():
-        # Step 0: 提取文本
+        # Step 0: 提取文本（图片路径会同步调用模型，放线程池避免阻塞事件循环）
         try:
-            text, parser = extract_text_from_file(filename, content_bytes)
+            text, parser = await asyncio.to_thread(extract_text_from_file, filename, content_bytes)
         except Exception as exc:
             yield f"data: {json.dumps({'type': 'error', 'content': f'文件解析失败: {exc}'})}\n\n"
             return
@@ -2442,7 +2461,7 @@ async def parse_jd_image(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="上传文件为空")
 
     try:
-        text, _ = extract_text_from_file(file.filename or "", content)
+        text, _ = await asyncio.to_thread(extract_text_from_file, file.filename or "", content)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"JD图片识别失败: {exc}") from exc
 

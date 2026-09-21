@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { X, Plus, Save, Trash2, Pencil, Settings, ChevronDown, Check, Cpu } from 'lucide-react';
 import { api, type AIConfig, type SubTask, type TaskCreatePayload, type TaskInfo } from '../api/client';
 import { agentApi, type SettingsInfo, type CustomModel } from '../api/agentApi';
+import { authApi } from '../api/authApi';
 import { CITY_OPTIONS } from '../constants/cities';
 import clsx from 'clsx';
 
@@ -196,7 +197,19 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
           hasKey: true,
         });
       }
-      setModelOptions(opts.filter(o => o.hasKey));
+      authApi.cloudModels().then(templates => {
+        for (const tpl of templates) {
+          opts.push({
+            providerKey: `cloud:${tpl.id}`,
+            modelId: tpl.model_id,
+            label: `官方 · ${tpl.display_name || tpl.model_id}`,
+            hasKey: true,
+          });
+        }
+        setModelOptions(opts.filter(o => o.hasKey));
+      }).catch(() => {
+        setModelOptions(opts.filter(o => o.hasKey));
+      });
     }).catch(() => {});
   }, [open, aiEnabled]);
 
@@ -456,8 +469,8 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
                                 }, {} as Record<string, ModelOption[]>)
                               ).map(([providerName, opts]) => (
                                 <div key={providerName}>
-                                  <div className="px-2 py-1 text-[10px] font-medium text-slate-500 uppercase tracking-wider">
-                                    {providerName}
+                                  <div className={`px-2 py-1 text-[10px] font-medium uppercase tracking-wider ${providerName === '官方' ? 'text-emerald-400/80' : 'text-slate-500'}`}>
+                                    {providerName === '官方' ? '🛡 官方模型（云端代理）' : providerName}
                                   </div>
                                   {opts.map(opt => {
                                     const isActive = aiProvider === opt.providerKey && aiModel === opt.modelId;
@@ -468,6 +481,7 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
                                         onClick={() => handleModelSelect(opt)}
                                         className={clsx(
                                           'w-full text-left px-2 py-1.5 rounded text-xs flex items-center gap-1.5 transition-colors',
+                                          opt.providerKey.startsWith('cloud:') && isActive ? 'bg-emerald-500/15 text-emerald-400' :
                                           isActive ? 'bg-sky-500/20 text-sky-400' : 'text-slate-300 hover:bg-slate-700/50',
                                         )}
                                       >
