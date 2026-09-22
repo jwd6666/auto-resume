@@ -30,9 +30,10 @@ backend/app/services/*.env
 backend/app/services/*.key
 .env
 
-# 简历样本和导出文件（含个人隐私）
-*.html
-backend/data/resume_store/
+# 简历样本和导出文件（含个人隐私）：只针对数据目录，不用全局 *.html，避免误伤前端源码 html
+backend/data/**/*.html
+backend/app/data/**/*.html
+backend/app/data/resume_store/
 
 # IDE
 .deveco/

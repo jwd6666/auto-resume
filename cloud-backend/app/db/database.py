@@ -20,3 +20,16 @@ class Base(DeclarativeBase):
 def init_db() -> None:
     from . import models  # noqa: F401 确保模型注册
     Base.metadata.create_all(bind=engine)
+    _migrate_add_columns()
+
+
+def _migrate_add_columns() -> None:
+    """轻量迁移：SQLite 下 create_all 不会给已有表补列，这里手动补齐。"""
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "users" in insp.get_table_names():
+        cols = {c["name"] for c in insp.get_columns("users")}
+        if "daily_token_quota" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN daily_token_quota INTEGER"))

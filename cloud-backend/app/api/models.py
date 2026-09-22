@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..core import quota
-from ..core.config import DAILY_TOKEN_QUOTA
 from ..core.deps import get_admin_user, get_current_user, get_db
 from ..db.models import ModelTemplate
 from ..schemas.auth import (
@@ -162,15 +161,17 @@ async def cloud_chat(body: CloudChatRequest, user=Depends(get_current_user), db:
             payload["tool_choice"] = body.tool_choice
 
     # ── 配额预留：输入估算 + max_tokens，请求期间占用，结束后按实际用量结转 ──
+    # 生效额度：个人额度覆盖 > 整体默认额度（管理后台可调）> 环境变量默认
     reserved, est_input = quota.estimate_request_tokens(body.messages, body.tools, body.max_tokens)
     day = quota.today_str()
-    ok, used = quota.reserve_tokens(db, user.id, reserved, day)
+    cap = quota.effective_quota(db, user.id)
+    ok, used = quota.reserve_tokens(db, user.id, reserved, day, cap)
     if not ok:
         raise HTTPException(
             status_code=429,
             detail=(
-                f"今日云端模型配额不足（已用 {used} / {DAILY_TOKEN_QUOTA} tokens），"
-                "请减小请求规模（降低 max_tokens）或明天再试"
+                f"今日云端模型配额不足（已用 {used} / {cap} tokens），"
+                "请减小请求规模（降低 max_tokens）、联系管理员提升额度或明天再试"
             ),
         )
 

@@ -21,6 +21,8 @@ class User(Base):
     # active / banned
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)
     ban_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 个人每日 token 额度覆盖（NULL=跟随整体默认额度）
+    daily_token_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     last_login_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     last_heartbeat_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
@@ -63,6 +65,16 @@ class Release(Base):
     published: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     published_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class SystemSetting(Base):
+    """系统级键值配置（如整体默认日额度），管理后台可改、重启不丢。"""
+
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(String(255), default="")
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class UserUsage(Base):

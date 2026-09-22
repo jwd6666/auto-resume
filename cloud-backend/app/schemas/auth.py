@@ -18,6 +18,8 @@ class UserOut(BaseModel):
     role: str
     status: str
     ban_reason: str | None = None
+    # 个人每日 token 额度覆盖（None=跟随整体默认额度）
+    daily_token_quota: int | None = None
     created_at: dt.datetime
     last_login_at: dt.datetime | None = None
     last_heartbeat_at: dt.datetime | None = None
@@ -52,6 +54,12 @@ class UpdateUserRequest(BaseModel):
 
 class BanRequest(BaseModel):
     reason: str = ""
+
+
+class QuotaUpdateRequest(BaseModel):
+    """token 日额度调整；daily_token_quota=null 表示清除、回退整体默认。"""
+
+    daily_token_quota: int | None = Field(default=None, ge=1, le=10_000_000_000)
 
 
 class ReleaseOut(BaseModel):

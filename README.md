@@ -1,6 +1,7 @@
 # BOSS 直聘自动招呼助手 (auto-resume)
 
-一个 Electron + React + Python(FastAPI + Playwright) 的桌面应用：
+「本地桌面客户端 + 云端管控服务」一体化项目：Electron + React + Python(FastAPI + Playwright) 桌面端，
+外加 [cloud-backend](./cloud-backend/README.md) 提供账号体系、云端托管模型、Token 额度与版本更新推送：
 
 - ✅ 多账号并行：每个账号一个独立的 Chromium `user_data_dir`，cookie/登录态互不污染
 - ✅ 自定义筛选：关键词、城市、薪资、经验、学历、公司规模、黑名单关键词
@@ -12,6 +13,9 @@
 - ✅ **岗位匹配**：基于能力模型的岗位-简历双向匹配评估
 - ✅ **AI 对话编辑**：通过自然语言对话修改简历内容，支持元素拾取定位
 - ✅ **简历导出**：支持 PDF（系统浏览器打印）和 HTML 导出
+- ✅ **云端账号体系**：须使用管理员开通的账号登录，60 秒心跳封禁即时生效，断网 24h 宽限
+- ✅ **云端托管模型**：管理员统一配置 API Key 发布模型模板，客户无需自备 Key 即可用 AI
+- ✅ **Token 日额度**：每人每日用量上限，管理后台用量统计页可提升整体或个人额度，当日即时生效
 
 > 说明：BOSS 直聘服务条款不允许自动化操作，本项目仅供学习交流。请合理控制频率，账号风险自担。
 
@@ -21,7 +25,7 @@
 
 ### 1. Python 3.10+
 
-> 你当前环境只有 Python 2.7，**必须**额外安装 Python 3。
+> Windows 上注意与自带的旧版 Python 区分，**必须**安装 Python 3。
 
 - 下载：<https://www.python.org/downloads/>
 - 安装时勾选 **"Add Python to PATH"**
@@ -33,7 +37,7 @@
 
 ### 2. Node.js 18+
 
-你已有 Node 22，无需操作。
+建议 18 或更高版本（LTS 优先）。
 
 ### 3. Chrome 浏览器
 
@@ -46,7 +50,7 @@ Playwright 默认通过 `channel="chrome"` 调用本机 Chrome；如果没有 Ch
 打开 PowerShell，进入项目目录：
 
 ```powershell
-cd E:\PROJECT\auto-resume
+cd <项目根目录>    # 例如 d:\my_project\ai_boos\auto-resume
 ```
 
 ### 1. 前端 / Electron 依赖
@@ -91,6 +95,8 @@ Electron 窗口出现后，你就能看到主界面。
 ---
 
 ## 四、使用流程
+
+> 首次启动客户端需登录云端账号（由管理员在后台开通），登录后方可使用打招呼与简历 Agent 功能。
 
 ### 4.1 自动打招呼
 
@@ -187,6 +193,12 @@ auto-resume/
 │                   ├── ResumeEditor.tsx  # iframe预览/源码/元素拾取/PDF导出
 │                   ├── DomTagExtension.tsx  # Tiptap DOM标签节点
 │                   └── render.ts
+├── cloud-backend/            # 云端管控后端（账号 / 模型托管 / 额度 / 版本发布）
+│   ├── app/api/              # auth / admin(用户·额度·用量) / models(模板·代理) / releases
+│   ├── app/core/quota.py     # token 额度：原子预留 + 实际用量结转
+│   ├── scripts/              # create_admin 等运维脚本
+│   └── static/admin.html     # 管理后台（零构建单页）
+├── scripts/                  # 打包辅助脚本（浏览器拷贝 / 云端地址注入）
 └── backend/                  # Python FastAPI + Playwright
     ├── requirements.txt
     └── app/
@@ -221,11 +233,40 @@ auto-resume/
 - `backend/data/auto_resume.sqlite` 简历数据（简历、岗位、对话记录）
 - `backend/logs/<task_id>.log` 文件日志
 
-这些目录**不会**被 git 追踪。
+这些目录**不会**被 git 追踪；`cloud-backend/cloud.db` 与 `.env`（含密钥）同样不入版本库。
 
 ---
 
-## 六、常见问题
+## 六、云服务（cloud-backend）
+
+客户端与云端解耦：桌面端本地跑 FastAPI + Playwright，账号、模型托管、额度与版本推送由独立的 `cloud-backend`（FastAPI）承担。
+
+- **账号体系**：管理员后台创建用户并分发；60s 心跳使封禁近实时生效，断网 24 小时宽限
+- **模型托管**：后台配置模型模板（Base URL / API Key / 上下文参数）并发布，客户端一键导入，AI 请求经云端代理转发，客户无需自备 API Key
+- **Token 日额度**：每用户每日用量上限，按「预留 + 实际结转」计费；额度优先级 个人 > 整体默认 > 环境变量 `DAILY_TOKEN_QUOTA`，管理后台「用量统计」页可实时提升整体或个人额度
+- **版本推送**：草稿 → 发布 → 撤回，支持强制更新横幅，下载走外部链接
+- **管理后台**：`http://<server>:8000/admin`，部署步骤与完整 API 见 [cloud-backend/README.md](./cloud-backend/README.md)
+
+云端本地开发：
+
+```powershell
+cd cloud-backend
+pip install -r requirements.txt
+Copy-Item .env.example .env   # 修改 JWT_SECRET 后方可启动
+python run.py                 # 默认 0.0.0.0:8000；客户端开发模式自动连 127.0.0.1:8000
+```
+
+打包分发时通过环境变量把安装包指向正式云端：
+
+```powershell
+$env:AUTORESUME_CLOUD_URL="https://your-cloud-domain"
+$env:CSC_IDENTITY_AUTO_DISCOVERY="false"
+npm run dist:win
+```
+
+---
+
+## 七、常见问题
 
 **Q1. 打招呼按钮点不到 / 选择器失效？**
 BOSS 前端会改 DOM。`backend/app/services/boss_automator.py` 里的选择器（`.start-chat-btn` / `.dialog-container textarea` 等）可能需要按当前页面调整。日志里会有 `打招呼失败` 提示。
@@ -241,11 +282,11 @@ BOSS 前端会改 DOM。`backend/app/services/boss_automator.py` 里的选择器
 
 ---
 
-## 七、生产打包
+## 八、生产打包
 
 > 浏览器二进制（Chromium）是平台专属，**Windows 包必须在 Windows 上打，macOS 包必须在 macOS 上打**，不能交叉编译。
 
-### 7.1 Windows（在 Windows 上）
+### 8.1 Windows（在 Windows 上）
 
 ```powershell
 $env:AUTORESUME_CLOUD_URL="https://agentht.jwdo.top"
@@ -260,7 +301,7 @@ npm run dist:win
 | `release/BOSS自动招呼助手-Setup-0.1.0.exe` | NSIS 安装包（双击安装）               |
 | `release/win-unpacked/`                    | 解压版（直接跑里面的 .exe，不用安装） |
 
-### 7.2 macOS（在 Mac 上）
+### 8.2 macOS（在 Mac 上）
 
 依赖一次性准备：
 
@@ -296,7 +337,7 @@ npm run dist:mac:dir
 | `release/BOSS自动招呼助手-0.1.0-arm64.dmg` | Apple Silicon 安装镜像          |
 | `release/mac-arm64/BOSS自动招呼助手.app`   | 解压版 .app（直接拖进去就能跑） |
 
-### 7.3 安装与首次运行注意
+### 8.3 安装与首次运行注意
 
 **Windows**：未签名，SmartScreen 会拦截，点「更多信息 → 仍要运行」。
 
@@ -309,7 +350,7 @@ npm run dist:mac:dir
 xattr -dr com.apple.quarantine "/Applications/BOSS自动招呼助手.app"
 ```
 
-### 7.4 数据目录
+### 8.4 数据目录
 
 打包后的应用，用户数据（浏览器 profile / SQLite / 日志）写在：
 

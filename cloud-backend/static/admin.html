@@ -1,0 +1,792 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AutoResume 管理后台111</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background: #0b1220; color: #e2e8f0; font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; }
+  .card { background: linear-gradient(180deg, rgba(30,41,59,.75), rgba(15,23,42,.9)); border: 1px solid rgba(148,163,184,.1); border-radius: 12px; }
+  .inp { background: #0b1220; border: 1px solid #334155; border-radius: 8px; padding: 8px 12px; font-size: 14px; color: #e2e8f0; outline: none; width: 100%; transition: border-color .2s; }
+  .inp:focus { border-color: #0ea5e9; }
+  .btn { border-radius: 8px; padding: 8px 16px; font-size: 14px; cursor: pointer; border: none; transition: all .15s; display: inline-flex; align-items: center; gap: 6px; }
+  .btn-primary { background: linear-gradient(to right, #0284c7, #0ea5e9); color: #fff; }
+  .btn-primary:hover { filter: brightness(1.15); }
+  .btn-danger { background: rgba(239,68,68,.15); color: #fca5a5; border: 1px solid rgba(239,68,68,.3); }
+  .btn-danger:hover { background: rgba(239,68,68,.25); }
+  .btn-ghost { background: transparent; color: #94a3b8; border: 1px solid #334155; }
+  .btn-ghost:hover { color: #e2e8f0; border-color: #475569; }
+  .badge { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; display: inline-block; }
+  .badge-active { background: rgba(16,185,129,.15); color: #6ee7b7; }
+  .badge-banned { background: rgba(239,68,68,.15); color: #fca5a5; }
+  .badge-admin { background: rgba(139,92,246,.15); color: #c4b5fd; }
+  .badge-draft { background: rgba(148,163,184,.15); color: #cbd5e1; }
+  .badge-force { background: rgba(245,158,11,.15); color: #fbbf24; }
+  /* 侧栏导航 */
+  .sidebar { width: 220px; background: #0f172a; border-right: 1px solid rgba(148,163,184,.08); display: flex; flex-direction: column; position: fixed; top: 0; bottom: 0; left: 0; z-index: 40; }
+  .nav-link { display: flex; align-items: center; gap: 10px; padding: 10px 16px; margin: 2px 8px; border-radius: 8px; font-size: 14px; color: #94a3b8; cursor: pointer; transition: all .15s; text-decoration: none; }
+  .nav-link:hover { background: rgba(30,41,59,.6); color: #e2e8f0; }
+  .nav-link.active { background: linear-gradient(to right, rgba(2,132,199,.3), rgba(14,165,233,.1)); color: #fff; border: 1px solid rgba(14,165,233,.25); }
+  /* 主内容区 */
+  .main-area { margin-left: 220px; min-height: 100vh; }
+  .topbar { height: 56px; background: rgba(15,23,42,.85); backdrop-filter: blur(12px); border-bottom: 1px solid rgba(148,163,184,.08); display: flex; align-items: center; justify-content: space-between; padding: 0 24px; position: sticky; top: 0; z-index: 30; }
+  .content-area { padding: 24px; max-width: 1200px; }
+  /* 统计卡 */
+  .stat-card { background: linear-gradient(180deg, rgba(30,41,59,.75), rgba(15,23,42,.9)); border: 1px solid rgba(148,163,184,.1); border-radius: 12px; padding: 20px; }
+  .stat-value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+  .stat-label { font-size: 13px; color: #64748b; }
+</style>
+</head>
+<body>
+
+<!-- ═════════ 登录视图 ═════════ -->
+<div id="loginView" class="min-h-screen flex items-center justify-center">
+  <div style="position:fixed;inset:0;overflow:hidden;pointer-events:none;z-index:0">
+    <div style="position:absolute;top:-80px;left:-80px;width:384px;height:384px;border-radius:50%;background:rgba(14,165,233,.1);filter:blur(80px)"></div>
+    <div style="position:absolute;bottom:-80px;right:-80px;width:384px;height:384px;border-radius:50%;background:rgba(139,92,246,.1);filter:blur(80px)"></div>
+  </div>
+  <div class="card p-8 w-full max-w-sm mx-4" style="z-index:1;position:relative">
+    <div class="flex flex-col items-center mb-6">
+      <div class="w-14 h-14 rounded-2xl flex items-center justify-center mb-3" style="background:linear-gradient(135deg,#0ea5e9,#8b5cf6);box-shadow:0 8px 24px rgba(14,165,233,.3)">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      </div>
+      <h1 class="text-xl font-bold">AutoResume 管理后台</h1>
+      <p class="text-xs text-slate-500 mt-1">仅管理员可登录</p>
+    </div>
+    <div class="space-y-3">
+      <input id="adminaccount" class="inp" type="account" placeholder="管理员邮箱" autocomplete="account" />
+      <input id="adminPass" class="inp" type="password" placeholder="密码" autocomplete="current-password" />
+      <p id="loginErr" class="text-xs text-red-400 hidden"></p>
+      <button class="btn btn-primary w-full justify-center py-2.5" onclick="doLogin()">登录</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════ 管理视图 ═════════ -->
+<div id="adminView" class="hidden">
+  <!-- 侧栏 -->
+  <nav class="sidebar">
+    <div class="p-4 border-b border-slate-800/60">
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-lg flex items-center justify-center" style="background:linear-gradient(135deg,#0ea5e9,#8b5cf6)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <div>
+          <div class="text-sm font-semibold">AutoResume</div>
+          <div class="text-[10px] text-slate-500">管理后台</div>
+        </div>
+      </div>
+    </div>
+    <div class="flex-1 py-3">
+      <div class="px-4 text-[10px] text-slate-600 uppercase tracking-wider mb-1">概览</div>
+      <a class="nav-link active" data-page="dashboard" onclick="switchPage('dashboard')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        仪表盘
+      </a>
+      <div class="px-4 text-[10px] text-slate-600 uppercase tracking-wider mt-4 mb-1">管理</div>
+      <a class="nav-link" data-page="users" onclick="switchPage('users')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        用户管理
+      </a>
+      <a class="nav-link" data-page="releases" onclick="switchPage('releases')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        版本管理
+      </a>
+      <a class="nav-link" data-page="models" onclick="switchPage('models')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        模型管理
+      </a>
+      <a class="nav-link" data-page="usage" onclick="switchPage('usage')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+        用量统计
+      </a>
+    </div>
+    <div class="p-4 border-t border-slate-800/60">
+      <div class="text-xs text-slate-500" id="meLabel"></div>
+      <button class="text-xs text-slate-600 hover:text-red-400 mt-1 cursor-pointer bg-transparent border-none" onclick="doLogout()">退出登录</button>
+    </div>
+  </nav>
+
+  <!-- 主内容 -->
+  <div class="main-area">
+    <!-- 顶栏 -->
+    <div class="topbar">
+      <h2 id="pageTitle" class="text-base font-semibold">仪表盘</h2>
+      <div class="flex items-center gap-2">
+        <a href="/docs" target="_blank" class="btn btn-ghost text-xs">API 文档</a>
+      </div>
+    </div>
+
+    <!-- ── 仪表盘 ── -->
+    <div id="page-dashboard" class="content-area">
+      <div class="grid grid-cols-4 gap-4 mb-6">
+        <div class="stat-card"><div class="stat-label">总用户</div><div id="statTotal" class="stat-value">—</div></div>
+        <div class="stat-card"><div class="stat-label">封禁中</div><div id="statBanned" class="stat-value text-red-400">—</div></div>
+        <div class="stat-card"><div class="stat-label">今日 Token</div><div id="statDashTodayTokens" class="stat-value" style="color:#38bdf8">—</div></div>
+        <div class="stat-card"><div class="stat-label">累计 Token</div><div id="statDashTotalTokens" class="stat-value" style="color:#a78bfa">—</div></div>
+      </div>
+      <div class="card p-5">
+        <h3 class="text-sm font-semibold mb-3">最近活跃用户</h3>
+        <table class="w-full text-sm"><thead><tr class="text-left text-xs text-slate-500 border-b border-slate-800"><th class="py-2">账号</th><th>昵称</th><th>状态</th><th>最近心跳</th></tr></thead><tbody id="dashActiveUsers"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ── 用户管理 ── -->
+    <div id="page-users" class="content-area hidden">
+      <div class="card p-5 mb-5">
+        <h3 class="text-sm font-semibold mb-3">创建用户</h3>
+        <div class="grid grid-cols-4 gap-3">
+          <input id="newaccount" class="inp" placeholder="账号（自定义用户名均可）" />
+          <input id="newPass" class="inp" placeholder="密码（留空默认 123456）" />
+          <input id="newNickname" class="inp" placeholder="昵称（可选）" />
+          <button class="btn btn-primary justify-center" onclick="createUser()">创建用户</button>
+        </div>
+        <p id="createMsg" class="text-xs mt-2 hidden"></p>
+      </div>
+      <div class="card p-5">
+        <div class="flex items-center gap-3 mb-3">
+          <input id="searchKw" class="inp" style="max-width:260px" placeholder="搜索账号 / 昵称" oninput="loadUsers()" />
+          <select id="filterStatus" class="inp" style="width:120px" onchange="loadUsers()"><option value="">全部状态</option><option value="active">正常</option><option value="banned">已封禁</option></select>
+          <div class="flex-1"></div>
+          <span id="pageInfo" class="text-xs text-slate-500"></span>
+          <button class="btn btn-ghost text-xs" onclick="prevPage()">上一页</button>
+          <button class="btn btn-ghost text-xs" onclick="nextPage()">下一页</button>
+        </div>
+        <table class="w-full text-sm"><thead><tr class="text-left text-xs text-slate-500 border-b border-slate-800"><th class="py-2">ID</th><th>账号</th><th>昵称</th><th>角色</th><th>状态</th><th>最近登录</th><th>最近心跳</th><th class="text-right">操作</th></tr></thead><tbody id="userRows"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ── 版本管理 ── -->
+    <div id="page-releases" class="content-area hidden">
+      <div class="card p-5 mb-5">
+        <h3 class="text-sm font-semibold mb-3">发布新版本</h3>
+        <div class="grid grid-cols-12 gap-3">
+          <input id="relVersion" class="inp col-span-2" placeholder="版本号（如 1.2.0）" />
+          <input id="relUrl" class="inp col-span-5" placeholder="下载外链（官网/网盘直链）" />
+          <label class="col-span-2 flex items-center gap-2 text-xs text-slate-400 cursor-pointer"><input id="relForce" type="checkbox" class="accent-sky-500 w-4 h-4" /> 强制更新</label>
+          <button class="btn btn-primary col-span-3 justify-center" onclick="createRelease()">保存草稿</button>
+        </div>
+        <textarea id="relNotes" class="inp mt-3" rows="3" placeholder="更新说明（每行一条，客户端更新横幅中展示）"></textarea>
+        <p id="relMsg" class="text-xs mt-2 hidden"></p>
+        <p class="text-xs text-slate-600 mt-2">保存后为草稿状态，点击「发布」才会推送给客户端。强制更新的版本横幅不可被用户关闭。</p>
+      </div>
+      <div class="card p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-semibold">版本列表</h3>
+          <span id="relCount" class="text-xs text-slate-500"></span>
+        </div>
+        <table class="w-full text-sm"><thead><tr class="text-left text-xs text-slate-500 border-b border-slate-800"><th class="py-2">ID</th><th>版本号</th><th>更新说明</th><th>下载链接</th><th>强制</th><th>状态</th><th>发布时间</th><th class="text-right">操作</th></tr></thead><tbody id="releaseRows"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ── 模型管理 ── -->
+    <div id="page-models" class="content-area hidden">
+      <div class="card p-5 mb-5">
+        <div class="flex items-center justify-between mb-3">
+          <h3 id="mdlFormTitle" class="text-sm font-semibold">添加模型模板</h3>
+          <button id="mdlCancelEdit" class="btn btn-ghost text-xs hidden" onclick="resetModelForm()">取消编辑</button>
+        </div>
+        <div class="grid grid-cols-4 gap-3">
+          <input id="mdlDisplayName" class="inp" placeholder="显示名称（如 GPT-4o）" />
+          <input id="mdlModelId" class="inp" placeholder="模型 ID（如 gpt-4o）" />
+          <input id="mdlBaseUrl" class="inp" placeholder="Base URL（如 https://api.openai.com/v1）" />
+          <input id="mdlApiKey" class="inp" type="password" placeholder="API Key（用户无需填写）" />
+        </div>
+        <div class="grid grid-cols-6 gap-3 mt-3">
+          <label class="flex items-center gap-2 text-xs text-slate-400"><input id="mdlFullUrl" type="checkbox" class="accent-sky-500" /> 完整URL</label>
+          <label class="flex items-center gap-2 text-xs text-slate-400"><input id="mdlMultimodal" type="checkbox" class="accent-sky-500" /> 多模态</label>
+          <input id="mdlApiFormat" class="inp" placeholder="API格式" value="openai" />
+          <input id="mdlSeries" class="inp" placeholder="系列（如 gpt / claude）" />
+          <input id="mdlCtxIn" class="inp" type="number" placeholder="输入上下文" value="128000" />
+          <input id="mdlCtxOut" class="inp" type="number" placeholder="输出上下文" value="4096" />
+        </div>
+        <div class="grid grid-cols-3 gap-3 mt-3">
+          <input id="mdlToolRounds" class="inp" type="number" placeholder="工具调用轮次" value="3" />
+          <input id="mdlSortOrder" class="inp" type="number" placeholder="排序权重" value="0" />
+          <button id="mdlSubmitBtn" class="btn btn-primary justify-center" onclick="saveModel()">保存草稿</button>
+        </div>
+        <p id="mdlMsg" class="text-xs mt-2 hidden"></p>
+      </div>
+      <div class="card p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-semibold">模型模板列表</h3>
+          <span id="mdlCount" class="text-xs text-slate-500"></span>
+        </div>
+        <table class="w-full text-sm"><thead><tr class="text-left text-xs text-slate-500 border-b border-slate-800"><th class="py-2">ID</th><th>名称</th><th>模型 ID</th><th>Base URL</th><th>Key</th><th>状态</th><th>排序</th><th class="text-right">操作</th></tr></thead><tbody id="modelRows"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ── 用量统计 ── -->
+    <div id="page-usage" class="content-area hidden">
+      <div class="grid grid-cols-4 gap-4 mb-6">
+        <div class="stat-card"><div class="stat-label">今日 Token 用量</div><div id="statTodayTokens" class="stat-value" style="color:#38bdf8">—</div></div>
+        <div class="stat-card"><div class="stat-label">今日请求数</div><div id="statTodayRequests" class="stat-value" style="color:#a78bfa">—</div></div>
+        <div class="stat-card"><div class="stat-label">累计 Token 用量</div><div id="statTotalTokens" class="stat-value" style="color:#38bdf8">—</div></div>
+        <div class="stat-card"><div class="stat-label">累计请求数</div><div id="statTotalRequests" class="stat-value" style="color:#a78bfa">—</div></div>
+      </div>
+      <div class="card p-5">
+        <div class="flex items-center gap-3 mb-3 pb-3 border-b border-slate-800/60">
+          <span class="text-xs text-slate-400">整体默认日额度：<span id="globalQuotaVal" class="text-sky-400 font-semibold">—</span> tokens</span>
+          <button class="btn btn-primary text-xs" onclick="editGlobalQuota()">提升整体额度</button>
+          <span class="text-xs text-slate-600">未单独设置额度的用户均按此额度生效，调整后立即生效</span>
+        </div>
+        <div class="flex items-center gap-3 mb-3">
+          <input id="usageDay" class="inp" style="width:160px" type="date" onchange="loadUsage()" />
+          <select id="usageUser" class="inp" style="width:180px" onchange="loadUsage()"><option value="">全部用户</option></select>
+          <div class="flex-1"></div>
+          <span id="usagePageInfo" class="text-xs text-slate-500"></span>
+          <button class="btn btn-ghost text-xs" onclick="usagePrevPage()">上一页</button>
+          <button class="btn btn-ghost text-xs" onclick="usageNextPage()">下一页</button>
+        </div>
+        <table class="w-full text-sm"><thead><tr class="text-left text-xs text-slate-500 border-b border-slate-800"><th class="py-2">用户 ID</th><th>账号</th><th>昵称</th><th>日期</th><th>Token 用量</th><th>请求数</th><th>日额度</th><th class="text-right">操作</th></tr></thead><tbody id="usageRows"></tbody></table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let token = localStorage.getItem('admin_token') || '';
+let me = null;
+let page = 1;
+const pageSize = 20;
+let currentPage = 'dashboard';
+
+const isDev = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
+
+function switchPage(p) {
+  currentPage = p;
+  document.querySelectorAll('.nav-link').forEach(el => el.classList.toggle('active', el.dataset.page === p));
+  document.querySelectorAll('[id^="page-"]').forEach(el => el.classList.toggle('hidden', el.id !== 'page-' + p));
+  const titles = { dashboard: '仪表盘', users: '用户管理', releases: '版本管理', models: '模型管理', usage: '用量统计' };
+  document.getElementById('pageTitle').textContent = titles[p] || '';
+  if (p === 'dashboard') loadDashboard();
+  if (p === 'users') { loadStats(); loadUsers(); }
+  if (p === 'releases') loadReleases();
+  if (p === 'models') loadModels();
+  if (p === 'usage') loadUsagePage();
+}
+
+const api = async (path, opts = {}) => {
+  const res = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(opts.headers || {}) } });
+  if (res.status === 401) { showLogin('登录已过期'); throw new Error('unauthorized'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    let detail = data.detail || ('HTTP ' + res.status);
+    if (Array.isArray(detail)) detail = detail.map(e => `${(e.loc || []).slice(1).join('.')}: ${e.msg}`).join('; ');
+    throw new Error(detail);
+  }
+  return data;
+};
+
+function showLogin(msg) {
+  token = ''; localStorage.removeItem('admin_token');
+  document.getElementById('loginView').classList.remove('hidden');
+  document.getElementById('adminView').classList.add('hidden');
+  if (msg) { const el = document.getElementById('loginErr'); el.textContent = msg; el.classList.remove('hidden'); }
+}
+
+async function doLogin() {
+  const account = document.getElementById('adminaccount').value.trim();
+  const password = document.getElementById('adminPass').value;
+  const err = document.getElementById('loginErr');
+  err.classList.add('hidden');
+  try {
+    const res = await fetch('/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account, password }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || '登录失败');
+    if (data.user.role !== 'admin') throw new Error('该账号不是管理员');
+    token = data.token; me = data.user;
+    localStorage.setItem('admin_token', token);
+    enterAdmin();
+  } catch (e) { err.textContent = e.message; err.classList.remove('hidden'); }
+}
+
+async function enterAdmin() {
+  document.getElementById('loginView').classList.add('hidden');
+  document.getElementById('adminView').classList.remove('hidden');
+  document.getElementById('meLabel').textContent = me ? me.account : '';
+  switchPage('dashboard');
+}
+
+async function doLogout() { showLogin(); }
+
+/* ── 仪表盘 ── */
+async function loadDashboard() {
+  try {
+    const s = await api('/admin/stats');
+    document.getElementById('statTotal').textContent = s.total_users;
+    document.getElementById('statBanned').textContent = s.banned_users;
+    document.getElementById('statDashTodayTokens').textContent = formatTokens(s.today_tokens);
+    document.getElementById('statDashTotalTokens').textContent = formatTokens(s.total_tokens);
+    const users = await api('/admin/users?page=1&page_size=10');
+    const now = Date.now();
+    const active = users.items.filter(u => u.last_heartbeat_at && now - new Date(u.last_heartbeat_at + 'Z') < 86400000);
+    const tbody = document.getElementById('dashActiveUsers');
+    tbody.innerHTML = '';
+    active.slice(0, 8).forEach(u => {
+      const tr = document.createElement('tr');
+      tr.className = 'border-b border-slate-800/50';
+      tr.innerHTML = `<td class="py-2">${u.account}</td><td class="text-slate-400">${u.nickname || '-'}</td><td>${u.status === 'banned' ? '<span class="badge badge-banned">已封禁</span>' : '<span class="badge badge-active">正常</span>'}</td><td class="text-xs text-slate-500">${fmt(u.last_heartbeat_at)}</td>`;
+      tbody.appendChild(tr);
+    });
+  } catch {}
+}
+
+function formatTokens(n) {
+  if (n == null) return '—';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return String(n);
+}
+
+/* ── 用户管理 ── */
+async function loadStats() {
+  try {
+    const s = await api('/admin/stats');
+    document.getElementById('statTotal').textContent = s.total_users;
+    document.getElementById('statBanned').textContent = s.banned_users;
+  } catch {}
+}
+
+async function loadUsers() {
+  const kw = document.getElementById('searchKw').value.trim();
+  const st = document.getElementById('filterStatus').value;
+  try {
+    const d = await api(`/admin/users?keyword=${encodeURIComponent(kw)}&status=${st}&page=${page}&page_size=${pageSize}`);
+    document.getElementById('pageInfo').textContent = `共 ${d.total} 人 · 第 ${d.page} 页`;
+    const tbody = document.getElementById('userRows');
+    tbody.innerHTML = '';
+    d.items.forEach(u => {
+      const tr = document.createElement('tr');
+      tr.className = 'border-b border-slate-800/50 hover:bg-slate-800/30';
+      tr.innerHTML = `
+        <td class="py-2.5 text-slate-500">${u.id}</td>
+        <td>${u.account}</td>
+        <td class="text-slate-400">${u.nickname || '-'}</td>
+        <td>${u.role === 'admin' ? '<span class="badge badge-admin">管理员</span>' : '用户'}</td>
+        <td>${u.status === 'banned' ? '<span class="badge badge-banned">已封禁</span>' : '<span class="badge badge-active">正常</span>'}</td>
+        <td class="text-xs text-slate-500">${fmt(u.last_login_at)}</td>
+        <td class="text-xs text-slate-500">${fmt(u.last_heartbeat_at)}</td>
+        <td class="text-right">${actionBtns(u)}</td>`;
+      tbody.appendChild(tr);
+    });
+  } catch (e) { if (e.message !== 'unauthorized') alert('加载失败：' + e.message); }
+}
+
+function actionBtns(u) {
+  const esc = s => String(s).replace(/'/g, "\\'");
+  const isMe = me && u.id === me.id;
+  let btns = '';
+  if (u.role === 'admin') {
+    btns += '<span class="badge badge-admin" style="font-size:11px">管理员</span>';
+  } else {
+    const ban = u.status === 'banned'
+      ? `<button class="btn btn-ghost text-xs" onclick="unbanUser(${u.id})">解封</button>`
+      : `<button class="btn btn-danger text-xs" onclick="banUser(${u.id},'${esc(u.account)}')">封禁</button>`;
+    btns += ban;
+  }
+  btns += `<button class="btn btn-ghost text-xs" onclick="resetPass(${u.id},'${esc(u.account)}')">重置密码</button>`;
+  if (!isMe) {
+    btns += `<button class="btn btn-danger text-xs" onclick="deleteUser(${u.id},'${esc(u.account)}')">删除</button>`;
+  }
+  return btns;
+}
+
+async function createUser() {
+  const account = document.getElementById('newaccount').value.trim();
+  const password = document.getElementById('newPass').value;
+  const nickname = document.getElementById('newNickname').value.trim();
+  const msg = document.getElementById('createMsg');
+  msg.classList.add('hidden');
+  if (account.length < 3) { msg.className = 'text-xs mt-2 text-red-400'; msg.textContent = '账号至少 3 个字符（用户名或邮箱均可）'; msg.classList.remove('hidden'); return; }
+  try {
+    const body = { account, nickname };
+    if (password.trim()) body.password = password;  // 留空则走后端默认 123456
+    await api('/admin/users', { method: 'POST', body: JSON.stringify(body) });
+    const initPass = password.trim() ? '自定义密码' : '123456';
+    msg.className = 'text-xs mt-2 text-emerald-400'; msg.textContent = `用户 ${account} 创建成功，初始密码：${initPass}`;
+    msg.classList.remove('hidden');
+    document.getElementById('newaccount').value = ''; document.getElementById('newPass').value = ''; document.getElementById('newNickname').value = '';
+    await Promise.all([loadStats(), loadUsers()]);
+  } catch (e) { msg.className = 'text-xs mt-2 text-red-400'; msg.textContent = e.message; msg.classList.remove('hidden'); }
+}
+
+async function banUser(id, account) {
+  const reason = prompt(`封禁用户 ${account}\n封禁原因：`, '违规使用');
+  if (reason === null) return;
+  try { await api(`/admin/users/${id}/ban`, { method: 'POST', body: JSON.stringify({ reason }) }); await Promise.all([loadStats(), loadUsers()]); } catch (e) { alert(e.message); }
+}
+async function unbanUser(id) {
+  if (!confirm('确认解封？')) return;
+  try { await api(`/admin/users/${id}/unban`, { method: 'POST' }); await Promise.all([loadStats(), loadUsers()]); } catch (e) { alert(e.message); }
+}
+async function resetPass(id, account) {
+  const pw = prompt(`重置 ${account} 的密码（留空取消，输入 123456 等简单密码亦可）：`);
+  if (!pw) return;
+  try { await api(`/admin/users/${id}`, { method: 'PUT', body: JSON.stringify({ password: pw }) }); alert('密码已重置'); } catch (e) { alert(e.message); }
+}
+async function deleteUser(id, account) {
+  if (!confirm(`确认永久删除 ${account}？`)) return;
+  try { await api(`/admin/users/${id}`, { method: 'DELETE' }); await Promise.all([loadStats(), loadUsers()]); } catch (e) { alert(e.message); }
+}
+
+function prevPage() { if (page > 1) { page--; loadUsers(); } }
+function nextPage() { page++; loadUsers(); }
+
+/* ── 版本管理 ── */
+async function loadReleases() {
+  try {
+    const d = await api('/admin/releases');
+    document.getElementById('relCount').textContent = `共 ${d.items.length} 个版本`;
+    const tbody = document.getElementById('releaseRows');
+    tbody.innerHTML = '';
+    if (!d.items.length) { tbody.innerHTML = '<tr><td colspan="8" class="py-8 text-center text-slate-600">暂无版本</td></tr>'; return; }
+    const esc = s => String(s).replace(/'/g, "\\'");
+    d.items.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.className = 'border-b border-slate-800/50 hover:bg-slate-800/30';
+      const notesPreview = (r.notes || '').split('\n').filter(Boolean).slice(0, 2).join(' / ');
+      tr.innerHTML = `
+        <td class="py-2.5 text-slate-500">${r.id}</td>
+        <td class="font-semibold">${r.version}</td>
+        <td class="text-xs text-slate-400 max-w-48 truncate" title="${esc(r.notes)}">${notesPreview || '—'}</td>
+        <td class="text-xs text-slate-400 max-w-44 truncate"><a href="${r.download_url}" target="_blank" class="hover:text-brand-400" style="color:inherit">${r.download_url}</a></td>
+        <td>${r.force ? '<span class="badge badge-force">强制</span>' : '<span class="text-xs text-slate-500">否</span>'}</td>
+        <td>${r.published ? '<span class="badge badge-active">已发布</span>' : '<span class="badge badge-draft">草稿</span>'}</td>
+        <td class="text-xs text-slate-500">${r.published_at ? fmt(r.published_at) : '—'}</td>
+        <td class="text-right">
+          ${r.published
+            ? `<button class="btn btn-ghost text-xs" onclick="togglePublish(${r.id},false)">撤回</button>`
+            : `<button class="btn btn-primary text-xs" onclick="togglePublish(${r.id},true)">发布</button>`}
+          <button class="btn btn-ghost text-xs" onclick="editRelease(${r.id},'${esc(r.version)}')">编辑</button>
+          <button class="btn btn-danger text-xs" onclick="deleteRelease(${r.id},'${esc(r.version)}')">删除</button>
+        </td>`;
+      tbody.appendChild(tr);
+    });
+  } catch (e) { if (e.message !== 'unauthorized') alert('加载失败：' + e.message); }
+}
+
+async function createRelease() {
+  const version = document.getElementById('relVersion').value.trim();
+  const download_url = document.getElementById('relUrl').value.trim();
+  const notes = document.getElementById('relNotes').value;
+  const force = document.getElementById('relForce').checked;
+  const msg = document.getElementById('relMsg');
+  msg.classList.add('hidden');
+  if (!version || !download_url) { msg.className = 'text-xs mt-2 text-red-400'; msg.textContent = '版本号和下载链接必填'; msg.classList.remove('hidden'); return; }
+  try {
+    await api('/admin/releases', { method: 'POST', body: JSON.stringify({ version, notes, download_url, force }) });
+    msg.className = 'text-xs mt-2 text-emerald-400'; msg.textContent = `版本 ${version} 已保存为草稿`; msg.classList.remove('hidden');
+    document.getElementById('relVersion').value = ''; document.getElementById('relUrl').value = ''; document.getElementById('relNotes').value = ''; document.getElementById('relForce').checked = false;
+    await loadReleases();
+  } catch (e) { msg.className = 'text-xs mt-2 text-red-400'; msg.textContent = e.message; msg.classList.remove('hidden'); }
+}
+
+async function togglePublish(id, published) {
+  const action = published ? '发布' : '撤回';
+  if (!confirm(`确认${action}？${published ? '客户端将立即收到更新提示。' : '客户端将不再收到该版本提示。'}`)) return;
+  try { await api(`/admin/releases/${id}/publish`, { method: 'POST', body: JSON.stringify({ published }) }); await loadReleases(); } catch (e) { alert(e.message); }
+}
+
+async function editRelease(id, version) {
+  try {
+    const d = await api('/admin/releases');
+    const r = d.items.find(x => x.id === id);
+    if (!r) return;
+    const notes = prompt(`修改 ${version} 的更新说明：`, r.notes); if (notes === null) return;
+    const url = prompt('修改下载链接：', r.download_url); if (url === null) return;
+    const force = confirm('是否强制更新？（确定=强制，取消不强制）');
+    await api(`/admin/releases/${id}`, { method: 'PUT', body: JSON.stringify({ notes, download_url: url, force }) });
+    await loadReleases();
+  } catch (e) { alert(e.message); }
+}
+
+async function deleteRelease(id, version) {
+  if (!confirm(`确认删除版本 ${version}？`)) return;
+  try { await api(`/admin/releases/${id}`, { method: 'DELETE' }); await loadReleases(); } catch (e) { alert(e.message); }
+}
+
+/* ── 工具 ── */
+function fmt(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts + 'Z');
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return '刚刚';
+  if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
+  if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
+  return d.toLocaleDateString('zh-CN');
+}
+
+document.getElementById('adminPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+
+/* ── 模型管理 ── */
+async function loadModels() {
+  try {
+    const d = await api('/admin/models');
+    document.getElementById('mdlCount').textContent = `共 ${d.total} 个模板`;
+    const tbody = document.getElementById('modelRows');
+    tbody.innerHTML = '';
+    if (!d.items.length) { tbody.innerHTML = '<tr><td colspan="8" class="py-8 text-center text-slate-600">暂无模型模板</td></tr>'; return; }
+    const esc = s => String(s).replace(/'/g, "\\'");
+    d.items.forEach(m => {
+      const tr = document.createElement('tr');
+      tr.className = 'border-b border-slate-800/50 hover:bg-slate-800/30';
+      tr.innerHTML = `
+        <td class="py-2.5 text-slate-500">${m.id}</td>
+        <td class="font-semibold">${esc(m.display_name)}</td>
+        <td class="font-mono text-xs text-slate-400">${esc(m.model_id)}</td>
+        <td class="text-xs text-slate-500 max-w-44 truncate">${esc(m.base_url)}</td>
+        <td>${m.api_key_set ? '<span class="badge badge-active">已配</span>' : '<span class="text-xs text-red-400">未配</span>'}</td>
+        <td>${m.published ? '<span class="badge badge-active">已发布</span>' : '<span class="badge badge-draft">草稿</span>'}</td>
+        <td class="text-xs text-slate-500">${m.sort_order}</td>
+        <td class="text-right">
+          ${m.published
+            ? `<button class="btn btn-ghost text-xs" onclick="toggleModelPublish(${m.id},false)">撤回</button>`
+            : `<button class="btn btn-primary text-xs" onclick="toggleModelPublish(${m.id},true)">发布</button>`}
+          <button class="btn btn-ghost text-xs" onclick="editModel(${m.id})">编辑</button>
+          <button class="btn btn-danger text-xs" onclick="deleteModel(${m.id},'${esc(m.display_name)}')">删除</button>
+        </td>`;
+      tbody.appendChild(tr);
+    });
+  } catch (e) { if (e.message !== 'unauthorized') alert('加载失败：' + e.message); }
+}
+
+let mdlEditingId = null;
+
+function resetModelForm() {
+  mdlEditingId = null;
+  document.getElementById('mdlFormTitle').textContent = '添加模型模板';
+  document.getElementById('mdlSubmitBtn').textContent = '保存草稿';
+  document.getElementById('mdlCancelEdit').classList.add('hidden');
+  document.getElementById('mdlApiKey').placeholder = 'API Key（用户无需填写）';
+  document.getElementById('mdlDisplayName').value = '';
+  document.getElementById('mdlModelId').value = '';
+  document.getElementById('mdlBaseUrl').value = '';
+  document.getElementById('mdlApiKey').value = '';
+  document.getElementById('mdlApiFormat').value = 'openai';
+  document.getElementById('mdlFullUrl').checked = false;
+  document.getElementById('mdlMultimodal').checked = false;
+  document.getElementById('mdlSeries').value = '';
+  document.getElementById('mdlCtxIn').value = '128000';
+  document.getElementById('mdlCtxOut').value = '4096';
+  document.getElementById('mdlToolRounds').value = '3';
+  document.getElementById('mdlSortOrder').value = '0';
+  document.getElementById('mdlMsg').classList.add('hidden');
+}
+
+async function saveModel() {
+  const display_name = document.getElementById('mdlDisplayName').value.trim();
+  const model_id = document.getElementById('mdlModelId').value.trim();
+  const base_url = document.getElementById('mdlBaseUrl').value.trim();
+  const api_key = document.getElementById('mdlApiKey').value.trim();
+  const api_format = document.getElementById('mdlApiFormat').value.trim() || 'openai';
+  const full_url = document.getElementById('mdlFullUrl').checked;
+  const multimodal = document.getElementById('mdlMultimodal').checked;
+  const model_series = document.getElementById('mdlSeries').value.trim();
+  const context_input = parseInt(document.getElementById('mdlCtxIn').value) || 128000;
+  const context_output = parseInt(document.getElementById('mdlCtxOut').value) || 4096;
+  const tool_call_rounds = parseInt(document.getElementById('mdlToolRounds').value) || 3;
+  const sort_order = parseInt(document.getElementById('mdlSortOrder').value) || 0;
+  const msg = document.getElementById('mdlMsg');
+  msg.classList.add('hidden');
+  if (!display_name || !model_id || !base_url) { msg.className = 'text-xs mt-2 text-red-400'; msg.textContent = '名称、模型 ID 和 Base URL 必填'; msg.classList.remove('hidden'); return; }
+  try {
+    if (mdlEditingId) {
+      const body = { display_name, model_id, base_url, api_format, full_url, multimodal, model_series, context_input, context_output, tool_call_rounds, sort_order };
+      if (api_key) body.api_key = api_key;
+      await api(`/admin/models/${mdlEditingId}`, { method: 'PUT', body: JSON.stringify(body) });
+      msg.className = 'text-xs mt-2 text-emerald-400'; msg.textContent = `模型 ${display_name} 已更新`;
+      msg.classList.remove('hidden');
+    } else {
+      await api('/admin/models', { method: 'POST', body: JSON.stringify({ display_name, model_id, base_url, api_key, api_format, full_url, multimodal, model_series, context_input, context_output, tool_call_rounds, sort_order }) });
+      msg.className = 'text-xs mt-2 text-emerald-400'; msg.textContent = `模型 ${display_name} 已保存为草稿`;
+      msg.classList.remove('hidden');
+    }
+    resetModelForm();
+    await loadModels();
+  } catch (e) { msg.className = 'text-xs mt-2 text-red-400'; msg.textContent = e.message; msg.classList.remove('hidden'); }
+}
+
+async function toggleModelPublish(id, published) {
+  const action = published ? '发布' : '撤回';
+  if (!confirm(`确认${action}？${published ? '客户端将可以拉取该模型模板。' : '客户端将不再看到该模型模板。'}`)) return;
+  try { await api(`/admin/models/${id}/publish`, { method: 'POST', body: JSON.stringify({ published }) }); await loadModels(); } catch (e) { alert(e.message); }
+}
+
+async function editModel(id) {
+  try {
+    const d = await api('/admin/models');
+    const m = d.items.find(x => x.id === id);
+    if (!m) return;
+    mdlEditingId = id;
+    document.getElementById('mdlFormTitle').textContent = `编辑模型模板 #${id}（${m.display_name}）`;
+    document.getElementById('mdlSubmitBtn').textContent = '保存修改';
+    document.getElementById('mdlCancelEdit').classList.remove('hidden');
+    document.getElementById('mdlApiKey').placeholder = m.api_key_set ? '已配置 ✓（留空不修改）' : '尚未配置 API Key';
+    document.getElementById('mdlDisplayName').value = m.display_name || '';
+    document.getElementById('mdlModelId').value = m.model_id || '';
+    document.getElementById('mdlBaseUrl').value = m.base_url || '';
+    document.getElementById('mdlApiKey').value = '';
+    document.getElementById('mdlApiFormat').value = m.api_format || 'openai';
+    document.getElementById('mdlFullUrl').checked = !!m.full_url;
+    document.getElementById('mdlMultimodal').checked = !!m.multimodal;
+    document.getElementById('mdlSeries').value = m.model_series || '';
+    document.getElementById('mdlCtxIn').value = m.context_input ?? 128000;
+    document.getElementById('mdlCtxOut').value = m.context_output ?? 4096;
+    document.getElementById('mdlToolRounds').value = m.tool_call_rounds ?? 3;
+    document.getElementById('mdlSortOrder').value = m.sort_order ?? 0;
+    document.getElementById('mdlMsg').classList.add('hidden');
+    document.getElementById('mdlFormTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } catch (e) { alert(e.message); }
+}
+
+async function deleteModel(id, name) {
+  if (!confirm(`确认删除模型「${name}」？`)) return;
+  try { await api(`/admin/models/${id}`, { method: 'DELETE' }); await loadModels(); } catch (e) { alert(e.message); }
+}
+
+// 开发模式自动填充密码
+if (isDev) {
+  document.getElementById('adminaccount').value = 'admin';
+  document.getElementById('adminPass').value = 'admin123';
+}
+
+/* ── 用量统计 ── */
+let usagePage = 1;
+const usagePageSize = 20;
+
+async function loadUsagePage() {
+  const today = new Date().toISOString().slice(0, 10);
+  const dayInput = document.getElementById('usageDay');
+  if (!dayInput.value) dayInput.value = today;
+  await loadUsageUserOptions();
+  await loadGlobalQuota();
+  await loadUsageStats();
+  await loadUsage();
+}
+
+async function loadUsageUserOptions() {
+  try {
+    const d = await api('/admin/users?page=1&page_size=200');
+    const sel = document.getElementById('usageUser');
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">全部用户</option>';
+    d.items.forEach(u => {
+      const opt = document.createElement('option');
+      opt.value = u.id;
+      opt.textContent = u.account + (u.nickname ? ` (${u.nickname})` : '');
+      sel.appendChild(opt);
+    });
+    sel.value = cur;
+  } catch {}
+}
+
+async function loadUsageStats() {
+  try {
+    const s = await api('/admin/stats');
+    document.getElementById('statTodayTokens').textContent = formatTokens(s.today_tokens);
+    document.getElementById('statTodayRequests').textContent = s.today_requests;
+    document.getElementById('statTotalTokens').textContent = formatTokens(s.total_tokens);
+    document.getElementById('statTotalRequests').textContent = s.total_requests;
+  } catch {}
+}
+
+async function loadUsage() {
+  const day = document.getElementById('usageDay').value;
+  const userId = document.getElementById('usageUser').value;
+  let url = `/admin/usage?page=${usagePage}&page_size=${usagePageSize}`;
+  if (day) url += `&day=${day}`;
+  if (userId) url += `&user_id=${userId}`;
+  try {
+    const d = await api(url);
+    document.getElementById('usagePageInfo').textContent = `共 ${d.total} 条 · 第 ${d.page} 页`;
+    const tbody = document.getElementById('usageRows');
+    tbody.innerHTML = '';
+    if (!d.items.length) { tbody.innerHTML = '<tr><td colspan="8" class="py-8 text-center text-slate-600">当日无用量数据</td></tr>'; return; }
+    const esc = s => String(s).replace(/'/g, "\\'");
+    d.items.forEach(u => {
+      const pct = u.tokens / (u.quota || 1);
+      const tr = document.createElement('tr');
+      tr.className = 'border-b border-slate-800/50 hover:bg-slate-800/30';
+      tr.innerHTML = `
+        <td class="py-2.5 text-slate-500">${u.user_id}</td>
+        <td>${u.account}</td>
+        <td class="text-slate-400">${u.nickname || '-'}</td>
+        <td class="text-xs text-slate-500">${u.day}</td>
+        <td style="color:${pct >= 0.9 ? '#f87171' : '#38bdf8'}">${formatTokens(u.tokens)} <span class="text-[10px] text-slate-600">(${Math.min(999, Math.round(pct * 100))}%)</span></td>
+        <td class="text-xs ${u.quota_override ? 'text-amber-400' : 'text-slate-500'}">${formatTokens(u.quota)}${u.quota_override ? ' <span class="badge" style="background:rgba(245,158,11,.15);color:#fbbf24;font-size:10px">个人</span>' : ''}</td>
+        <td class="text-right"><button class="btn btn-ghost text-xs" onclick="adjustUserQuota(${u.user_id},'${esc(u.account)}',${u.quota},${!!u.quota_override})">${u.quota_override ? '调整额度' : '提升额度'}</button></td>`;
+      tbody.appendChild(tr);
+    });
+    await loadUsageStats();
+  } catch (e) { if (e.message !== 'unauthorized') alert('加载失败：' + e.message); }
+}
+
+function usagePrevPage() { if (usagePage > 1) { usagePage--; loadUsage(); } }
+function usageNextPage() { usagePage++; loadUsage(); }
+
+/* ── token 额度调整 ── */
+let quotaInfo = null;
+
+// 解析额度输入：支持 500k / 1m 简写，返回整数或 null（非法）
+function parseQuotaInput(s) {
+  const m = String(s).trim().toLowerCase().replace(/[, ]/g, '');
+  if (!m) return null;
+  const num = /^\d+(\.\d+)?[km]$/.test(m) ? parseFloat(m.slice(0, -1)) * (m.endsWith('k') ? 1000 : 1000000)
+    : /^\d+(\.\d+)?$/.test(m) ? parseFloat(m) : NaN;
+  if (isNaN(num) || num < 0) return null;
+  return Math.round(num);
+}
+
+async function loadGlobalQuota() {
+  try {
+    const d = await api('/admin/quota');
+    quotaInfo = d;
+    document.getElementById('globalQuotaVal').textContent =
+      `${d.global_quota.toLocaleString()}${d.customized ? '（已自定义）' : `（环境变量默认 ${formatTokens(d.env_default)}）`}`;
+  } catch {}
+}
+
+async function editGlobalQuota() {
+  const cur = quotaInfo ? quotaInfo.global_quota.toLocaleString() : '';
+  const input = prompt(
+    `设置整体默认日额度（tokens，支持 500k / 2m 简写），对所有未单独设置额度的用户生效。\n当前：${cur}\n输入 0 恢复环境变量默认（${quotaInfo ? quotaInfo.env_default : 'DAILY_TOKEN_QUOTA'}）。`,
+    String(quotaInfo ? quotaInfo.global_quota : '')
+  );
+  if (input === null) return;
+  const v = parseQuotaInput(input);
+  if (v === null) { alert('请输入合法的正整数（或 0 恢复默认）'); return; }
+  try {
+    await api('/admin/quota', { method: 'PUT', body: JSON.stringify({ daily_token_quota: v || null }) });
+    await loadGlobalQuota();
+    await loadUsage();  // 刷新列表里跟随默认的用户额度
+  } catch (e) { alert(e.message); }
+}
+
+async function adjustUserQuota(userId, account, currentQuota, hasOverride) {
+  const input = prompt(
+    `调整 ${account} 的个人日额度（tokens，支持 500k / 2m 简写，当日即时生效）。\n当前生效：${currentQuota.toLocaleString()}${hasOverride ? '（个人额度）' : '（跟随整体默认）'}\n输入 0 清除个人额度、恢复跟随整体默认。`,
+    String(currentQuota)
+  );
+  if (input === null) return;
+  const v = parseQuotaInput(input);
+  if (v === null) { alert('请输入合法的正整数（或 0 恢复跟随默认）'); return; }
+  try {
+    await api(`/admin/users/${userId}/quota`, { method: 'PUT', body: JSON.stringify({ daily_token_quota: v || null }) });
+    await loadUsage();
+  } catch (e) { alert(e.message); }
+}
+
+// 自动恢复
+(async () => {
+  if (!token) return;
+  try {
+    me = await api('/auth/me');
+    if (me.role !== 'admin') { showLogin(); return; }
+    enterAdmin();
+  } catch { /* token 失效 */ }
+})();
+</script>
+</body>
+</html>
