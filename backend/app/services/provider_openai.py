@@ -57,8 +57,12 @@ async def stream_cloud_chat(
     max_tokens: int = 8192,
     tools: list | None = None,
     tool_choice: str | None = None,
+    source: str = "other",
 ) -> AsyncGenerator[dict, None]:
     """通过云端代理调用官方模型（SSE 流式）。
+
+    source: 功能来源（greeting/chat/copy/interview/resume/test），
+    云端按此记录「额度用量」明细，缺省 other。
 
     yield 事件：
       - {"type": "text", "content": "..."}           文本片段
@@ -76,6 +80,7 @@ async def stream_cloud_chat(
         "messages": messages,
         "max_tokens": max_tokens,
         "stream": True,
+        "source": source,
     }
     if tools:
         payload["tools"] = tools
@@ -140,6 +145,10 @@ async def stream_cloud_chat(
                         if content:
                             output_chars += len(content)
                             yield {"type": "text", "content": content}
+                        # 思考模型的 reasoning_content / reasoning 字段透传
+                        rc = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                        if rc:
+                            yield {"type": "reasoning", "content": rc}
                         for tc in delta.get("tool_calls", []) or []:
                             idx = tc.get("index", 0)
                             if idx not in tool_call_acc:

@@ -86,7 +86,7 @@ class GenerateResumeRequest(BaseModel):
     accent: Optional[str] = "#2563eb"
 
 
-RESTYLE_STYLES = ("classic", "modern", "minimal", "creative")
+RESTYLE_STYLES = ("classic", "modern", "minimal", "creative", "table", "timeline")
 
 
 class RestyleResumeRequest(BaseModel):
@@ -822,6 +822,60 @@ def delete_resume(resume_id: int, db: Session = Depends(get_db)):
     return {"message": "Resume deleted"}
 
 
+# 生成阶段可选简历布局（classic = SYSTEM_GENERATE_RESUME 默认的深色侧边栏双栏，无需额外指令）
+_GENERATE_LAYOUT_HINTS = {
+    "modern": ("现代极简单栏布局，无卡片无阴影，靠间距和细横线分割各个模块；"
+               "页面居中，固定 A4 宽度（内容区约 170mm 水平居中，上下留白约 10mm）；"
+               "大姓名顶部居中（24px 700 #111），下面一行小字联系方式（居中一行，用 | 分隔电话/邮箱/地址等）；"
+               "模块顺序：求职意向、教育背景、项目经历、实习经历、技能、证书、自我评价，无对应内容的模块可省略但顺序不得打乱；"
+               "候选人有校园经历/学生工作/竞赛时，作为「校园经历」板块紧跟项目经历独立成块（或并入实习经历板块），必须保留不得省略；"
+               "视觉：黑白灰配色（标题 #111、正文 #333、次要 #777），细灰横线 1px #ddd 作为区块分隔；"
+               "模块标题加粗、字号略大（15px 700 #111），正文 13px、行高 1.7 舒适；"
+               "无任何装饰元素：无图标、无色块、无渐变、无主题色竖条；--accent 变量仍需定义，但页面视觉不依赖主题色"),
+    "minimal": ("单栏居中 max-width: 160mm，大量留白，padding: 20mm；姓名居中（20px），下方仅一条宽 40mm 细主题色短线；"
+                "无图标、无背景色块、无侧边栏、无分割线；模块标题用主题色文字 + 1px 浅灰线；正文 12px，行距 1.8；"
+                "技能用逗号分隔文本，联系方式一行用 | 分隔"),
+    "creative": ("顶部全幅主题色色带（高约 80mm）：白色大号姓名（28px）+ 求职意向（16px），头像嵌入色带右侧圆形白边框；"
+                 "下方双栏：左 40% 浅灰背景 #f5f5f5 放技能/荣誉/教育，右 60% 白色放工作/项目/校园经历/自我评价；"
+                 "模块标题深色小号加粗 + 2px 主题色左竖条；正文 12px，行距 1.6"),
+    "table": ("使用表格 <table> 布局简历，正式商务风格，白底黑字，细灰色分割线（1px #ccc），不要花哨渐变、阴影；"
+              "表格结构：第一行大标题（姓名 + 求职意向）跨列合并；第二行个人信息一行，单元格分别放电话、邮箱、地址、GitHub；"
+              "下面依次是教育经历、项目经历、技能证书、自我评价，每个大标题单独占一行跨列合并，内容放在子表格单元格内；"
+              "候选人有校园经历/学生工作/竞赛时，在项目经历之后增加一行「校园经历」大标题行（结构同项目经历），必须保留不得省略；"
+              "字体用系统无衬线字体，字号适中（正文约 12.5px），边框细浅不刺眼；"
+              "表格仅用于排版，语义尽量整洁，除大标题行跨列外不要多余合并单元格；"
+              "未提供的信息用合理中文占位符填充；border-collapse: collapse，@media print 时边框不丢失（设置 -webkit-print-color-adjust: exact 和 print-color-adjust: exact）；"
+              "--accent 变量仍需定义，但配色以黑白灰为主，主题色不作为装饰"),
+    "timeline": ("时间轴风格单栏布局：页面居中，内容区约 170mm 水平居中；"
+                 "顶部大姓名（22px 700）+ 下方一行小字联系方式；"
+                 "经历类模块（教育背景、项目经历、实习经历/校园经历）使用时间轴呈现——模块内容区左侧一条 2px 浅灰竖向轴线贯穿，"
+                 "每条经历对应轴上一个主题色圆点节点，节点旁标注时间，右侧放经历名称、角色与要点列表；"
+                 "技能、证书、自我评价等非时间模块正常分块排版（标题 + 内容），不使用时间轴；"
+                 "候选人有校园经历时同样按时间轴呈现并必须保留；"
+                 "主题色仅用于时间轴节点圆点与少量强调；白底深灰字，正文 12.5-13px，行距 1.6，无渐变无阴影"),
+}
+
+
+def _append_layout_directive(user_msg: str, style: str, accent: str) -> str:
+    """把用户选的简历布局作为覆盖指令追加到生成请求（非 classic 时生效）。"""
+    hint = _GENERATE_LAYOUT_HINTS.get((style or "").strip())
+    if not hint:
+        return user_msg
+    return (user_msg +
+            f"\n\n---\n\n## 排版布局（本次必须采用此布局，仅覆盖系统提示中「深色侧边栏双栏」的默认整体视觉布局）\n\n{hint}\n\n"
+            f"主题色 {accent} 仍写入 CSS 变量 --accent（若上方布局明确要求黑白灰配色，则 --accent 仅作变量预留、不用于视觉装饰）；"
+            f"无论采用哪种布局，系统提示中的【主内容区板块划分】（包含「校园经历」为必保留独立板块）、【防溢出与打印】【HTML 结构要求】等内容规则均不变，仍必须遵守。")
+
+
+def _merge_profile_background(db: Session, background: str) -> str:
+    """把「背景档案」（个人信息表单）自动注入候选人背景，用于生成简历。"""
+    prof = db.query(models.UserBackground).order_by(models.UserBackground.id.asc()).first()
+    profile_text = (prof.content or "").strip() if prof else ""
+    if not profile_text or profile_text in background:
+        return background
+    return f"{profile_text}\n\n{background}" if background else profile_text
+
+
 @router.post("/resumes/generate", response_model=schemas.ResumeResponse)
 async def generate_resume(body: GenerateResumeRequest, db: Session = Depends(get_db)):
     """AI 根据候选人背景 + 目标岗位 JD 直接生成完整简历 HTML，写入磁盘。"""
@@ -833,7 +887,7 @@ async def generate_resume(body: GenerateResumeRequest, db: Session = Depends(get
     if not jd:
         raise HTTPException(status_code=400, detail="岗位 JD 为空，无法生成简历")
 
-    background = (body.background or "").strip()
+    background = _merge_profile_background(db, (body.background or "").strip())
     user_msg = f"## 目标岗位 JD\n\n{jd}"
     if background:
         user_msg += f"\n\n---\n\n## 候选人背景信息\n\n{background}"
@@ -841,6 +895,7 @@ async def generate_resume(body: GenerateResumeRequest, db: Session = Depends(get
         user_msg += "\n\n---\n\n## 候选人背景信息\n\n（用户未提供候选人背景，请基于目标岗位 JD 生成一份完整的简历模板，姓名、联系方式等字段用合理的占位信息填充。）"
     accent = body.accent if body.accent in ACCENTS else "#2563eb"
     user_msg += f"\n\n---\n\n请使用主题色 {accent}，生成一份完整简历 HTML。"
+    user_msg = _append_layout_directive(user_msg, body.style, accent)
 
 
     raw = await complete_response(SYSTEM_GENERATE_RESUME, [{"role": "user", "content": user_msg}])
@@ -885,7 +940,7 @@ async def generate_resume_stream(body: GenerateResumeRequest, db: Session = Depe
     if not jd:
         raise HTTPException(status_code=400, detail="岗位 JD 为空，无法生成简历")
 
-    background = (body.background or "").strip()
+    background = _merge_profile_background(db, (body.background or "").strip())
     user_msg = f"## 目标岗位 JD\n\n{jd}"
     if background:
         user_msg += f"\n\n---\n\n## 候选人背景信息\n\n{background}"
@@ -893,6 +948,7 @@ async def generate_resume_stream(body: GenerateResumeRequest, db: Session = Depe
         user_msg += "\n\n---\n\n## 候选人背景信息\n\n（用户未提供候选人背景，请基于目标岗位 JD 生成一份完整的简历模板，姓名、联系方式等字段用合理的占位信息填充。）"
     accent = body.accent if body.accent in ACCENTS else "#2563eb"
     user_msg += f"\n\n---\n\n请使用主题色 {accent}，生成一份完整简历 HTML。"
+    user_msg = _append_layout_directive(user_msg, body.style, accent)
 
 
     async def _stream_gen():
@@ -1103,7 +1159,7 @@ async def chat_stream(request: schemas.ChatRequest, db: Session = Depends(get_db
             job_content=_build_job_content(db_job),
             resume_content=resume_content,
             messages=messages,
-            user_background=request.user_background,
+            user_background=_merge_profile_background(db, (request.user_background or "").strip()),
             resume_structured=resume_structured,
             resume_rendered_html=resume_rendered_html,
             resume_id=request.resume_id,
@@ -2341,7 +2397,7 @@ async def interview_sim_report(request: schemas.InterviewReportRequest, db: Sess
     system = f"{INTERVIEW_REPORT_SYSTEM}\n\n---\n\n{context}"
 
     user_msg = "请根据以上材料生成面试复盘报告（Markdown）。直接输出报告正文，不要前言套话。"
-    report_md = await complete_response(system, [{"role": "user", "content": user_msg}])
+    report_md = await complete_response(system, [{"role": "user", "content": user_msg}], source="interview")
 
     return schemas.InterviewReportResponse(report=report_md)
 
@@ -2576,6 +2632,7 @@ async def generate_greetings(request: GenerateGreetingsRequest):
         raw = await complete_response(
             _SYSTEM_PROMPT_GREETING,
             [{"role": "user", "content": user_content}],
+            source="copy",
         )
         data = json.loads(_strip_code_fence(raw, json_mode=True))
     except Exception as e:

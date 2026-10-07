@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Briefcase, FileText, Loader2, AlertTriangle, X, RotateCw, Check, Sparkles } from 'lucide-react';
-import type { Job, Resume } from '../../api/agentApi';
+import { Briefcase, FileText, Loader2, AlertTriangle, X, RotateCw, Check, Sparkles, Cpu, ChevronDown, Settings } from 'lucide-react';
+import clsx from 'clsx';
+import type { Job, Resume, CustomModel } from '../../api/agentApi';
 import { agentApi } from '../../api/agentApi';
+import { authApi } from '../../api/authApi';
 import { JobPanel } from './JobPanel';
 import { ResumePanel } from './ResumePanel';
 import { ChatPanel, type ChatPanelHandle } from './ChatPanel';
@@ -24,6 +26,13 @@ const DEFAULT_RATIO = 0.38;
 const MIN_RATIO = 0.2;
 const MAX_RATIO = 0.65;
 
+interface ModelOption {
+  providerKey: string;
+  modelId: string;
+  label: string;
+  hasKey: boolean;
+}
+
 export function ResumeAgentPage() {
   const [job, setJob] = useState<Job | null>(null);
   const [resume, setResume] = useState<Resume | null>(null);
@@ -37,6 +46,66 @@ export function ResumeAgentPage() {
   const restyleResumeIdRef = useRef<number | null>(null);
   const [sourceHtml, setSourceHtml] = useState('');
   const [generatePanelOpen, setGeneratePanelOpen] = useState(false);
+
+  // ── 模型选择（全局设置，与 AI 生成简历并排展示）──
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
+  const selectedProviderRef = useRef('');
+  const selectedModelRef = useRef('');
+  const [selectedLabel, setSelectedLabel] = useState('');
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+  const [modelReady, setModelReady] = useState<boolean | null>(null);
+
+  const loadModels = useCallback(() => {
+    agentApi.getSettings().then(s => {
+      const providers = s.providers as Record<string, any>;
+      const customModels: CustomModel[] = s.custom_models || [];
+      const opts: ModelOption[] = [];
+      for (const [key, pconfig] of Object.entries(providers)) {
+        const hasKey = !!s.api_keys_set[key];
+        for (const m of pconfig.models || []) {
+          opts.push({ providerKey: key, modelId: m.id, label: `${pconfig.name_cn} · ${m.name}`, hasKey });
+        }
+      }
+      for (const cm of customModels) {
+        opts.push({ providerKey: `custom:${cm.id}`, modelId: cm.model_id, label: `自定义 · ${cm.display_name || cm.model_id}`, hasKey: true });
+      }
+      authApi.cloudModels().then(templates => {
+        for (const tpl of templates) {
+          opts.push({ providerKey: `cloud:${tpl.id}`, modelId: tpl.model_id, label: `官方 · ${tpl.display_name || tpl.model_id}`, hasKey: true });
+        }
+        setModelOptions(opts.filter(o => o.hasKey || (o.providerKey === s.provider && o.modelId === s.model)));
+        const current = opts.find(o => o.providerKey === s.provider && o.modelId === s.model);
+        setSelectedLabel(current?.label || s.model);
+      }).catch(() => {
+        setModelOptions(opts.filter(o => o.hasKey || (o.providerKey === s.provider && o.modelId === s.model)));
+        const current = opts.find(o => o.providerKey === s.provider && o.modelId === s.model);
+        setSelectedLabel(current?.label || s.model);
+      });
+      selectedProviderRef.current = s.provider;
+      selectedModelRef.current = s.model;
+      const hasKey = s.provider.startsWith('cloud:') || s.provider.startsWith('custom:') || s.provider === 'custom' ? true : !!s.api_keys_set[s.provider];
+      setModelReady(hasKey);
+    }).catch(() => setModelReady(false));
+  }, []);
+
+  useEffect(() => { loadModels(); }, [loadModels]);
+
+  useEffect(() => {
+    const onModelsUpdated = () => loadModels();
+    window.addEventListener('models-updated', onModelsUpdated);
+    return () => window.removeEventListener('models-updated', onModelsUpdated);
+  }, [loadModels]);
+
+  const handleModelSelect = async (opt: ModelOption) => {
+    try {
+      await agentApi.updateSettings({ provider: opt.providerKey, model: opt.modelId });
+      selectedProviderRef.current = opt.providerKey;
+      selectedModelRef.current = opt.modelId;
+      setSelectedLabel(opt.label);
+      setModelReady(opt.hasKey);
+      setModelDropdownOpen(false);
+    } catch { /* */ }
+  };
 
   const [splitRatio, setSplitRatio] = useState(DEFAULT_RATIO);
   const [dragging, setDragging] = useState(false);
@@ -279,6 +348,79 @@ export function ResumeAgentPage() {
             <Sparkles size={14} className="text-accent-purple" />
             AI 生成简历
           </button>
+          {/* 模型选择 */}
+          <div className="relative">
+            <button
+              onClick={() => setModelDropdownOpen(v => !v)}
+              className={clsx(
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-colors border',
+                modelReady === false
+                  ? 'bg-red-500/10 text-red-400 border-red-500/30'
+                  : 'bg-surface-800/40 text-slate-300 border-slate-700/40 hover:bg-surface-700/40',
+              )}
+            >
+              <Cpu size={14} className="shrink-0" />
+              <span className="max-w-[180px] truncate">{selectedLabel || '选择模型'}</span>
+              {modelReady === false && <span className="text-[10px] shrink-0">(未配置Key)</span>}
+              <ChevronDown size={12} className="shrink-0" />
+            </button>
+            {modelDropdownOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setModelDropdownOpen(false)} />
+                <div className="absolute left-0 top-full mt-1 w-72 max-h-96 overflow-y-auto scrollbar-thin bg-surface-800 border border-slate-700/60 rounded-xl shadow-2xl z-50 animate-fade-in">
+                  <div className="p-2 border-b border-slate-700/30">
+                    <p className="text-xs text-slate-400 px-2 py-1">选择 AI 模型（切换后自动保存）</p>
+                  </div>
+                  <div className="p-1.5 space-y-0.5">
+                    {Object.entries(
+                      modelOptions.reduce((acc, opt) => {
+                        const providerName = opt.label.split(' · ')[0];
+                        if (!acc[providerName]) acc[providerName] = [];
+                        acc[providerName].push(opt);
+                        return acc;
+                      }, {} as Record<string, ModelOption[]>)
+                    ).map(([providerName, opts]) => (
+                      <div key={providerName}>
+                        <div className={`px-2 py-1.5 text-[11px] font-medium uppercase tracking-wider ${providerName === '官方' ? 'text-emerald-400/80' : 'text-slate-500'}`}>
+                          {providerName === '官方' ? '🛡 官方模型（云端代理）' : providerName}
+                        </div>
+                        {opts.map(opt => {
+                          const isActive = selectedProviderRef.current === opt.providerKey && selectedModelRef.current === opt.modelId;
+                          return (
+                            <button
+                              key={`${opt.providerKey}-${opt.modelId}`}
+                              onClick={() => handleModelSelect(opt)}
+                              className={clsx(
+                                'w-full text-left px-3 py-1.5 rounded-md text-xs flex items-center gap-1.5 transition-colors',
+                                opt.providerKey.startsWith('cloud:') && isActive ? 'bg-emerald-500/15 text-emerald-400' :
+                                isActive ? 'bg-accent-blue/15 text-accent-blue' : 'text-slate-300 hover:bg-surface-700/40',
+                              )}
+                            >
+                              {isActive && <Check size={11} className="shrink-0" />}
+                              <span className={clsx('truncate', isActive ? '' : 'ml-3.5')}>{opt.label.split(' · ').slice(1).join(' · ') || opt.label}</span>
+                              {!opt.hasKey && <span className="text-[9px] text-slate-600 shrink-0 ml-auto">未配置</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ))}
+                    {modelOptions.length === 0 && (
+                      <p className="text-xs text-slate-500 px-2.5 py-2">暂无可用模型，请先配置API Key</p>
+                    )}
+                  </div>
+                  <div className="p-2 border-t border-slate-700/30">
+                    <button
+                      onClick={() => { setModelDropdownOpen(false); window.dispatchEvent(new CustomEvent('navigate-model-management')); }}
+                      className="w-full flex items-center gap-1.5 px-2 py-1.5 text-xs text-slate-400 hover:text-slate-200 hover:bg-surface-700/40 rounded-md transition-colors"
+                    >
+                      <Settings size={11} />
+                      前往模型管理（配置Key、添加模型）
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 

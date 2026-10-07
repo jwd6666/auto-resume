@@ -1,6 +1,6 @@
 /** 模型管理 — 官方模板（云端直连，开箱即用） + 我的模型（本地 sidecar） */
 import { useEffect, useState } from 'react';
-import { Check, Cloud, Loader2, Zap, ZapOff, Plus, Trash2, Pencil, ListChecks, Shield, User } from 'lucide-react';
+import { Check, Cloud, Loader2, Zap, Plus, Trash2, Pencil, ListChecks, Shield, User } from 'lucide-react';
 import { agentApi, type SettingsInfo, type CustomModel } from '../api/agentApi';
 import { authApi } from '../api/authApi';
 import { AddModelModal, type CustomModelData } from './AddModelModal';
@@ -217,19 +217,6 @@ export function ModelManagement() {
     );
   }
 
-  const activeDisplayName = (() => {
-    if (isCloudActive && cloudTemplates) {
-      const tpl = cloudTemplates.find((t: any) => t.id === activeCloudId);
-      if (tpl) return tpl.display_name || tpl.model_id;
-      return `官方模型 #${activeCloudId}`;
-    }
-    if (selProvider.startsWith('custom:')) {
-      const cm = customModels.find(c => `custom:${c.id}` === selProvider);
-      return cm?.display_name || cm?.model_id || selModel;
-    }
-    return selModel;
-  })();
-
   return (
     <div className="p-5 h-full flex flex-col animate-fade-in">
       <div className="flex items-center justify-between mb-4">
@@ -255,30 +242,6 @@ export function ModelManagement() {
           <Plus size={14} /> 添加模型
         </button>
       </div>
-
-      {/* 当前使用 */}
-      {selProvider ? (
-        <div className="card p-3 mb-4 flex items-center gap-3">
-          <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${isCloudActive ? 'bg-gradient-to-br from-emerald-500/20 to-accent-blue/20' : 'bg-gradient-to-br from-accent-blue/20 to-accent-purple/20'}`}>
-            {isCloudActive ? <Shield size={18} className="text-emerald-400" /> : <Zap size={18} className="text-accent-blue" />}
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">当前使用</p>
-            <p className="text-sm font-medium text-slate-200">{activeDisplayName}</p>
-            {isCloudActive && <p className="text-[10px] text-emerald-400">通过云端代理，无需配置 API Key</p>}
-          </div>
-        </div>
-      ) : (
-        <div className="card p-3 mb-4 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-surface-800/60 flex items-center justify-center">
-            <ZapOff size={18} className="text-slate-600" />
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">当前使用</p>
-            <p className="text-sm font-medium text-slate-400">未设置 — 请选择一个模型</p>
-          </div>
-        </div>
-      )}
 
       {/* Tab */}
       <div className="flex items-center gap-1 mb-4 p-1 bg-surface-800/40 rounded-lg">
@@ -418,22 +381,17 @@ export function ModelManagement() {
               <div className="space-y-2">
                 {customModels.map(cm => {
                   const cmKey = `custom:${cm.id}`;
-                  const isActive = selProvider === cmKey;
                   const testRes = testResult[cmKey];
                   const displayName = cm.display_name || cm.model_id;
                   return (
-                    <div key={cm.id} className={`card p-3 transition-all ${isActive ? 'border-accent-blue/40' : ''}`}>
+                    <div key={cm.id} className="card p-3 transition-all">
                       <div className="flex items-center gap-2">
-                        {batchMode ? (
+                        {batchMode && (
                           <input type="checkbox" checked={checked.has(cm.id)} onChange={() => toggleCheck(cm.id)} className="accent-[#5b8def] shrink-0" />
-                        ) : (
-                          <button onClick={() => activateModel(cmKey, cm.model_id)} className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all shrink-0 ${isActive ? 'border-accent-blue bg-accent-blue' : 'border-slate-600 hover:border-slate-400'}`}>
-                            {isActive && <Check size={11} className="text-white" />}
-                          </button>
                         )}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 flex-wrap">
-                            <p className={`text-sm font-medium truncate ${isActive ? 'text-accent-blue' : 'text-slate-300'}`}>{displayName}</p>
+                            <p className="text-sm font-medium truncate text-slate-300">{displayName}</p>
                             {cm.multimodal && <span className="text-[10px] px-1 py-0.5 rounded bg-accent-purple/15 text-accent-purple">多模态</span>}
                             {cm.full_url && <span className="text-[10px] px-1 py-0.5 rounded bg-slate-600/30 text-slate-400">完整URL</span>}
                           </div>
@@ -454,7 +412,7 @@ export function ModelManagement() {
                         )}
                       </div>
                       {testRes && (
-                        <div className={`mt-1.5 ml-7 text-xs ${testRes.success ? 'text-green-400' : 'text-red-400'}`}>
+                        <div className={`mt-1.5 text-xs ${testRes.success ? 'text-green-400' : 'text-red-400'}`}>
                           {testRes.success ? '✓ ' : '✗ '}{testRes.message}
                         </div>
                       )}

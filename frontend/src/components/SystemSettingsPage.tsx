@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Bell, CheckCircle2, KeyRound, Loader2, LogIn, RefreshCw, XCircle } from 'lucide-react';
+import { Bell, CheckCircle2, Gauge, KeyRound, Loader2, LogIn, RefreshCw, XCircle } from 'lucide-react';
 import { updateApi, type UpdateStatus } from '../api/updateApi';
-import { authApi } from '../api/authApi';
+import { authApi, type UsageStats } from '../api/authApi';
 
 interface SystemSettingsPageProps {
   userAccount?: string | null;
@@ -21,6 +21,11 @@ export function SystemSettingsPage({ userAccount }: SystemSettingsPageProps) {
   const [confirmPwd, setConfirmPwd] = useState('');
   const [changing, setChanging] = useState(false);
   const [pwdMsg, setPwdMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // 额度用量
+  const [usage, setUsage] = useState<UsageStats | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageError, setUsageError] = useState<string | null>(null);
 
   const load = () => updateApi.check().then(setStatus).catch(() => {});
   useEffect(() => { load(); }, []);
@@ -56,6 +61,37 @@ export function SystemSettingsPage({ userAccount }: SystemSettingsPageProps) {
     } finally { setChanging(false); }
   };
 
+  const loadUsage = async () => {
+    setUsageLoading(true);
+    setUsageError(null);
+    try {
+      setUsage(await authApi.usage());
+    } catch (e: any) {
+      setUsageError(e.message || '额度查询失败');
+    } finally { setUsageLoading(false); }
+  };
+
+  // 登录后自动拉取额度用量
+  useEffect(() => { if (userAccount) loadUsage(); }, [userAccount]);
+
+  const fmt = (n: number) => (n ?? 0).toLocaleString('zh-CN');
+  const usagePct = usage ? Math.min(100, Math.round((usage.today_tokens / Math.max(1, usage.daily_quota)) * 100)) : 0;
+
+  // 合并今日/本月明细：按来源一行展示两项数据，按本月用量降序
+  const sourceDetail: { source: string; label: string; today: number; month: number }[] = [];
+  {
+    const bySource = new Map<string, { source: string; label: string; today: number; month: number }>();
+    for (const it of usage?.month_by_source ?? []) {
+      bySource.set(it.source, { source: it.source, label: it.label, today: 0, month: it.tokens });
+    }
+    for (const it of usage?.today_by_source ?? []) {
+      const cur = bySource.get(it.source) ?? { source: it.source, label: it.label, today: 0, month: 0 };
+      cur.today = it.tokens;
+      bySource.set(it.source, cur);
+    }
+    sourceDetail.push(...[...bySource.values()].sort((a, b) => b.month - a.month));
+  }
+
   return (
     <div className="p-5 h-full overflow-y-auto scrollbar-thin animate-fade-in">
       <div className="mb-4">
@@ -64,7 +100,7 @@ export function SystemSettingsPage({ userAccount }: SystemSettingsPageProps) {
       </div>
 
       {/* 账号安全 */}
-      <div className="card p-5 max-w-2xl mb-4">
+      <div className="card p-5 mb-4">
         <div className="flex items-center gap-2 mb-4">
           <KeyRound size={16} className="text-brand-400" />
           <h2 className="text-sm font-semibold text-slate-200">账号安全</h2>
@@ -137,7 +173,7 @@ export function SystemSettingsPage({ userAccount }: SystemSettingsPageProps) {
       </div>
 
       {/* 更新设置 */}
-      <div className="card p-5 max-w-2xl">
+      <div className="card p-5 mb-4">
         <div className="flex items-center gap-2 mb-4">
           <RefreshCw size={16} className="text-brand-400" />
           <h2 className="text-sm font-semibold text-slate-200">软件更新</h2>
@@ -210,6 +246,93 @@ export function SystemSettingsPage({ userAccount }: SystemSettingsPageProps) {
                 已是最新版本
               </div>
             )}
+          </div>
+        )}
+      </div>
+
+      {/* 额度用量 */}
+      <div className="card p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <Gauge size={16} className="text-brand-400" />
+          <h2 className="text-sm font-semibold text-slate-200">额度用量</h2>
+        </div>
+
+        {userAccount ? (
+          <>
+            <div className="py-3 border-t border-slate-800/60">
+              <div className="text-sm text-slate-300">今日已消耗</div>
+              <div className="text-xs text-slate-500 mt-0.5">
+                {fmt(usage?.today_tokens ?? 0)} Tokens · {fmt(usage?.today_requests ?? 0)} 次请求
+              </div>
+            </div>
+            <div className="py-3 border-t border-slate-800/60">
+              <div className="text-sm text-slate-300">本月已消耗</div>
+              <div className="text-xs text-slate-500 mt-0.5">
+                {fmt(usage?.month_tokens ?? 0)} Tokens · {fmt(usage?.month_requests ?? 0)} 次请求
+              </div>
+            </div>
+            <div className="py-3 border-t border-slate-800/60">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm text-slate-300">剩余额度（今日）</div>
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    {fmt(usage?.remaining_today ?? 0)} / {fmt(usage?.daily_quota ?? 0)} Tokens
+                  </div>
+                </div>
+                <button
+                  onClick={loadUsage}
+                  disabled={usageLoading}
+                  className="btn-primary text-xs disabled:opacity-50"
+                >
+                  {usageLoading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                  刷新统计
+                </button>
+              </div>
+              {/* 今日额度使用进度条 */}
+              <div className="mt-3 h-2 rounded-full bg-slate-800 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    usagePct >= 90 ? 'bg-red-500' : usagePct >= 70 ? 'bg-amber-500' : 'bg-gradient-to-r from-brand-500 to-cyan-400'
+                  }`}
+                  style={{ width: `${usagePct}%` }}
+                />
+              </div>
+              <div className="text-[10px] text-slate-600 mt-1">今日额度已用 {usagePct}%（每日重置）</div>
+            </div>
+
+            {/* 用量明细：区分打招呼 / 对话等功能来源 */}
+            <div className="py-3 border-t border-slate-800/60">
+              <div className="text-sm text-slate-300 mb-2">用量明细（按功能）</div>
+              {sourceDetail.length === 0 ? (
+                <div className="text-xs text-slate-600">暂无用量记录</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {sourceDetail.map((s) => (
+                    <div key={s.source} className="flex items-center justify-between text-xs">
+                      <span className="text-slate-400">{s.label}</span>
+                      <span className="text-slate-500 tabular-nums">
+                        今日 {fmt(s.today)} · 本月 {fmt(s.month)} Tokens
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {usageError && (
+                <div className="flex items-center gap-1 text-xs text-red-400 mt-2">
+                  <XCircle size={13} /> {usageError}
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="flex items-center justify-between py-3 border-t border-slate-800/60">
+            <div className="text-xs text-slate-500">登录后可查看额度用量</div>
+            <button
+              onClick={() => window.dispatchEvent(new Event('request-login'))}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs text-sky-300 hover:text-sky-200 hover:bg-sky-500/10 transition-colors"
+            >
+              <LogIn size={13} /> 前往登录
+            </button>
           </div>
         )}
       </div>

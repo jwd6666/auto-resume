@@ -81,17 +81,13 @@ RESUME_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "读取简历 HTML 文件。默认读取完整内容；可传 section_id 只读取指定 section（更省 token）。可用 section 列表见上下文中的「可用 section 列表」，必须使用其中列出的值。读取时系统自动校验文件指纹（乐观锁），确保后续修改基于最新内容。",
+            "description": "仅在需要修改简历时调用，用于获取修改所需的真实原文；纯咨询或查看场景无需调用。读取简历 HTML 文件，始终读取完整内容（不支持按 section 读取片段）。读取时系统自动校验文件指纹（乐观锁），确保后续修改基于最新内容。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
                         "description": "文件路径，必须从上下文中的「简历文件路径」逐字复制，禁止自行编造",
-                    },
-                    "section_id": {
-                        "type": "string",
-                        "description": "可选。只读取此 data-resume-section 对应的 section HTML 片段，可用值见上下文中的「可用 section 列表」。不传则读取全文。",
                     },
                 },
                 "required": ["path"],
@@ -102,7 +98,7 @@ RESUME_TOOLS = [
         "type": "function",
         "function": {
             "name": "patch_file",
-            "description": "精确字符串替换修改简历 HTML（str_replace 机制，含三级降级匹配+乐观锁+自动快照回滚）。先用 read_file 查看原文，把要修改的原文片段逐字符复制为 old_str，修改后的片段作为 new_str 传入。匹配策略：精确匹配→空白符标准化→difflib 滑动窗相似度降级，命中恰好一处才执行。修改前自动将当前版本压入快照栈，若修改导致 HTML 语法错误会自动弹栈回滚。每次只改一小块，多处修改分多次调用。new_str 传空字符串表示删除 old_str。仅接受 path、old_str、new_str 三个参数，不要传入其他参数。",
+            "description": "精确字符串替换修改简历 HTML（str_replace 机制，含三级降级匹配+乐观锁+自动快照回滚）。先用 read_file 查看原文，把要修改的原文片段逐字符复制为 old_str，修改后的片段作为 new_str 传入。匹配策略：精确匹配→空白符标准化→difflib 滑动窗相似度降级，命中恰好一处才执行。修改前自动将当前版本压入快照栈，若修改导致 HTML 语法错误会自动弹栈回滚。每次只改一小块，多处修改分多次调用。new_str 传空字符串表示删除 old_str。仅适合局部小改；新增大区域内容/新模块（如校园经历、整段新板块）请改用 write_file 全量重写。仅接受 path、old_str、new_str 三个参数，不要传入其他参数。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -127,7 +123,7 @@ RESUME_TOOLS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "将完整内容写入简历 HTML 文件（全量覆写，含乐观锁+自动快照回滚）。仅在需要大范围重写简历（如更换模板、重排版）时使用，且必须先 read_file 读取全文。写入前自动将当前版本压入快照栈，若写入内容有 HTML 语法错误会自动弹栈回滚。写入后前端会自动刷新预览。",
+            "description": "将完整内容写入简历 HTML 文件（全量覆写，含乐观锁+自动快照回滚）。在需要大范围重写简历时使用：更换模板、重排版、新增大区域内容/新模块（如校园经历、整段新板块）。必须先 read_file 读取全文，基于原文整体改写，不得凭摘要或记忆编造。写入前自动将当前版本压入快照栈，若写入内容有 HTML 语法错误会自动弹栈回滚。写入后前端会自动刷新预览。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -152,33 +148,6 @@ def _list_sections(html: str) -> str:
     if not matches:
         return "(未找到任何 data-resume-section 属性，请使用 read_file 读取全文)"
     return "\n".join(f"  - {m}" for m in matches)
-
-
-def _read_section(html: str, section_id: str) -> str:
-    pattern = re.compile(
-        rf'<[^>]+data-resume-section\s*=\s*["\']?{re.escape(section_id)}["\']?[^>]*>.*?</(?:section|div|header|article)>',
-        re.DOTALL | re.IGNORECASE,
-    )
-    matches = list(pattern.finditer(html))
-    if matches:
-        return "\n".join(m.group(0) for m in matches)
-    pattern_loose = re.compile(
-        rf'<[^>]+data-resume-section\s*=\s*["\']?{re.escape(section_id)}["\']?[^>]*>',
-        re.IGNORECASE,
-    )
-    loose_matches = list(pattern_loose.finditer(html))
-    if loose_matches:
-        parts = []
-        for match2 in loose_matches:
-            start = match2.start()
-            tag_name = match2.group(0).lstrip('<').split()[0].rstrip('>')
-            close_tag = f"</{tag_name}>"
-            close_pos = html.find(close_tag, start + len(match2.group(0)))
-            if close_pos != -1:
-                parts.append(html[start:close_pos + len(close_tag)])
-        if parts:
-            return "\n".join(parts)
-    return ""
 
 
 def _patch_section(html: str, section_id: str, new_html: str) -> str:
@@ -290,12 +259,6 @@ async def execute_tool(name: str, arguments: dict, resume_id: int) -> str:
             file_md5 = hashing.compute_hash(file_path)
             await _cache_file_md5(resume_id, file_md5)
 
-        section_id = arguments.get("section_id", "").strip()
-        if section_id:
-            section_html = _read_section(content, section_id)
-            if section_html:
-                return section_html
-            return f"未找到 data-resume-section=\"{section_id}\" 的 section。可用的 section 列表：\n" + _list_sections(content)
         await _mark_full_read(resume_id)
         return content
 
@@ -364,8 +327,8 @@ async def execute_tool(name: str, arguments: dict, resume_id: int) -> str:
             return "写入失败：content 参数为空。请重新调用 write_file，确保传入完整的 HTML 内容。"
         existing = read_resume_file(resume_id)
         if existing and existing.strip() and not await _has_full_read(resume_id):
-            return ("写入被拒绝：原简历已存在内容，但你尚未在本轮对话中通过 read_file（不传 section_id）读取完整文件。"
-                    "为避免覆盖丢失原内容，请先调用 read_file 读取全文，再写入；或改用 patch_file 按 section 局部修改。")
+            return ("写入被拒绝：原简历已存在内容，但你尚未在本轮对话中通过 read_file 读取完整文件。"
+                    "为避免覆盖丢失原内容，请先调用 read_file 读取全文，再写入；或改用 patch_file 局部修改。")
 
         if file_path.exists():
             expected_hash = await _get_cached_md5(resume_id)

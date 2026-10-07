@@ -247,5 +247,6 @@ async def generate_job_question_dicts(
     raw = await complete_response(
         GENERATE_BANK_SYSTEM,
         [{"role": "user", "content": user_msg}],
+        source="interview",
     )
     return parse_llm_question_list(raw)

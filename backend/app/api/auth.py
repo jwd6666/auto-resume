@@ -104,3 +104,41 @@ async def change_password(body: ChangePasswordBody) -> dict:
             detail = "密码修改失败"
         raise HTTPException(status_code=resp.status_code, detail=detail)
     return resp.json()
+
+
+# 额度用量明细的来源 → 展示名称
+SOURCE_LABELS = {
+    "greeting": "自动打招呼",
+    "chat": "简历对话",
+    "copy": "AI 话术生成",
+    "interview": "模拟面试",
+    "resume": "简历解析/生成",
+    "test": "模型测试",
+    "other": "其他",
+}
+
+
+@router.get("/usage")
+async def usage() -> dict:
+    """代理：云端额度用量统计（今日/本月消耗、剩余额度与按功能来源明细）。"""
+    token = cloud_auth.current_token()
+    if not token:
+        raise HTTPException(status_code=401, detail="未登录")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{CLOUD_SERVER_URL}/auth/usage",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"无法连接云端：{e}")
+    if resp.status_code != 200:
+        try:
+            detail = resp.json().get("detail") or "额度查询失败"
+        except Exception:
+            detail = "额度查询失败"
+        raise HTTPException(status_code=resp.status_code, detail=detail)
+    data = resp.json()
+    for item in data.get("today_by_source", []) + data.get("month_by_source", []):
+        item["label"] = SOURCE_LABELS.get(item.get("source"), item.get("source") or "其他")
+    return data

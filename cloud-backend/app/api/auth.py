@@ -1,12 +1,13 @@
-"""认证 API：登录 / 当前用户 / 心跳 / 修改密码。"""
+"""认证 API：登录 / 当前用户 / 心跳 / 修改密码 / 额度用量。"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..core import rate_limit
+from ..core import quota, rate_limit
 from ..core.deps import get_current_user, get_db, utcnow
-from ..db.models import User
+from ..db.models import User, UserUsage, UserUsageSource
 from ..schemas.auth import (
     ChangePasswordRequest,
     HeartbeatResponse,
@@ -81,3 +82,56 @@ def change_password(
     user.password_hash = hash_password(body.new_password)
     db.commit()
     return {"ok": True, "message": "密码已更新"}
+
+
+@router.get("/usage")
+def usage(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """当前用户的额度用量统计：今日/本月消耗、今日剩余额度与按功能来源明细。"""
+    today = quota.today_str()
+    month_prefix = today[:7]
+
+    today_row = (
+        db.query(UserUsage).filter(UserUsage.user_id == user.id, UserUsage.day == today).first()
+    )
+    month_agg = (
+        db.query(func.sum(UserUsage.tokens), func.sum(UserUsage.requests))
+        .filter(UserUsage.user_id == user.id, UserUsage.day.like(f"{month_prefix}%"))
+        .first()
+    )
+    cap = quota.effective_quota(db, user.id)
+    today_tokens = int(today_row.tokens or 0) if today_row else 0
+    today_requests = int(today_row.requests or 0) if today_row else 0
+    month_tokens = int(month_agg[0] or 0)
+    month_requests = int(month_agg[1] or 0)
+
+    today_by_source = [
+        {"source": r.source, "tokens": int(r.tokens or 0), "requests": int(r.requests or 0)}
+        for r in db.query(UserUsageSource)
+        .filter(UserUsageSource.user_id == user.id, UserUsageSource.day == today)
+        .all()
+    ]
+    month_rows = (
+        db.query(
+            UserUsageSource.source,
+            func.sum(UserUsageSource.tokens),
+            func.sum(UserUsageSource.requests),
+        )
+        .filter(UserUsageSource.user_id == user.id, UserUsageSource.day.like(f"{month_prefix}%"))
+        .group_by(UserUsageSource.source)
+        .all()
+    )
+    month_by_source = [
+        {"source": s, "tokens": int(t or 0), "requests": int(q or 0)} for s, t, q in month_rows
+    ]
+
+    return {
+        "day": today,
+        "today_tokens": today_tokens,
+        "today_requests": today_requests,
+        "month_tokens": month_tokens,
+        "month_requests": month_requests,
+        "daily_quota": cap,
+        "remaining_today": max(0, cap - today_tokens),
+        "today_by_source": today_by_source,
+        "month_by_source": month_by_source,
+    }

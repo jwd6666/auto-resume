@@ -126,6 +126,8 @@ class CloudChatRequest(BaseModel):
     stream: bool = False
     tools: list[dict] | None = None
     tool_choice: str | None = None
+    # 功能来源（额度用量明细）：greeting/chat/copy/interview/resume/test，缺省 other
+    source: str = Field(default="other", max_length=32)
 
 
 @client_router.post("/chat")
@@ -144,6 +146,7 @@ async def cloud_chat(body: CloudChatRequest, user=Depends(get_current_user), db:
     # 导致连接被硬切断（客户端表现为 incomplete chunked read）且配额结转永远不执行。
     api_key = t.api_key
     user_id = user.id
+    source = body.source
 
     base_url = t.base_url.rstrip("/")
     # full_url=True：base_url 已是完整接口地址，原样使用；否则按 OpenAI 兼容拼接
@@ -174,6 +177,8 @@ async def cloud_chat(body: CloudChatRequest, user=Depends(get_current_user), db:
                 "请减小请求规模（降低 max_tokens）、联系管理员提升额度或明天再试"
             ),
         )
+    # 配额准入成功后同步记录按来源的用量明细（仅统计展示用）
+    quota.reserve_source_tokens(db, user.id, source, reserved, day)
 
     if body.stream:
         from fastapi.responses import StreamingResponse
@@ -312,6 +317,7 @@ async def cloud_chat(body: CloudChatRequest, user=Depends(get_current_user), db:
                 if actual is None:
                     actual = actual_usage if actual_usage is not None else est_input + (output_chars + 1) // 2
                 quota.reconcile_tokens(user_id, day, reserved, actual)
+                quota.reconcile_source_tokens(user_id, day, source, reserved, actual)
 
         return StreamingResponse(
             _stream(),
@@ -332,11 +338,13 @@ async def cloud_chat(body: CloudChatRequest, user=Depends(get_current_user), db:
     except httpx.HTTPError as e:
         # 连接失败不扣配额
         quota.reconcile_tokens(user.id, day, reserved, 0)
+        quota.reconcile_source_tokens(user.id, day, source, reserved, 0)
         raise HTTPException(status_code=502, detail=f"上游模型连接失败：{str(e)[:200]}")
 
     if resp.status_code != 200:
         # 上游报错不扣配额
         quota.reconcile_tokens(user.id, day, reserved, 0)
+        quota.reconcile_source_tokens(user.id, day, source, reserved, 0)
         raise HTTPException(status_code=resp.status_code, detail=resp.text[:500])
 
     data = resp.json()
@@ -346,6 +354,7 @@ async def cloud_chat(body: CloudChatRequest, user=Depends(get_current_user), db:
     else:
         actual = quota.fallback_actual_tokens(data, est_input)
     quota.reconcile_tokens(user.id, day, reserved, actual)
+    quota.reconcile_source_tokens(user.id, day, source, reserved, actual)
     return data
 
 

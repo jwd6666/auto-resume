@@ -163,3 +163,45 @@ def fallback_actual_tokens(data: dict, est_input: int) -> int:
         return est_input + (len(str(content)) + extra + 1) // 2
     except Exception:
         return est_input
+
+
+# ── 按功能来源的用量明细（仅统计展示，不参与配额准入守卫）──
+
+
+def reserve_source_tokens(db: Session, user_id: int, source: str, amount: int, day: str | None = None) -> None:
+    """准入成功后按来源预留明细，记账节奏与 reserve_tokens 保持一致。"""
+    day = day or today_str()
+    db.execute(
+        text(
+            "INSERT OR IGNORE INTO user_usage_source (user_id, day, source, tokens, requests) "
+            "VALUES (:u, :d, :s, 0, 0)"
+        ),
+        {"u": user_id, "d": day, "s": source},
+    )
+    db.commit()
+    db.execute(
+        text(
+            "UPDATE user_usage_source SET tokens = tokens + :amt, requests = requests + 1 "
+            "WHERE user_id = :u AND day = :d AND source = :s"
+        ),
+        {"amt": amount, "u": user_id, "d": day, "s": source},
+    )
+    db.commit()
+
+
+def reconcile_source_tokens(user_id: int, day: str, source: str, reserved: int, actual: int) -> None:
+    """请求结束后把来源明细的预留值结转为实际用量（与 reconcile_tokens 同步调用）。"""
+    db = SessionLocal()
+    try:
+        db.execute(
+            text(
+                "UPDATE user_usage_source SET tokens = tokens - :reserved + :actual "
+                "WHERE user_id = :u AND day = :d AND source = :s"
+            ),
+            {"reserved": reserved, "actual": actual, "u": user_id, "d": day, "s": source},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()

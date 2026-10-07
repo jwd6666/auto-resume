@@ -2,10 +2,9 @@ import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallba
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Image from '@tiptap/extension-image';
-import { Send, Sparkles, Loader2, ClipboardCheck, AlertTriangle, Gauge, Star, ChevronDown, ChevronUp, X, Check, Cpu, ImagePlus, StopCircle, MessageSquarePlus, Undo2, UserCircle } from 'lucide-react';
+import { Send, Sparkles, Loader2, ClipboardCheck, Gauge, Star, ChevronDown, ChevronUp, X, Check, ImagePlus, StopCircle, MessageSquarePlus, Undo2, Brain } from 'lucide-react';
 import clsx from 'clsx';
 import { agentApi, type ChatMessage, type Job, type Resume, type RefChip, type Scorecard, type HtmlPatch } from '../../api/agentApi';
-import { authApi } from '../../api/authApi';
 import { DomTag } from './editor/DomTagExtension';
 import { AssistantMessageRenderer } from './AssistantMessageRenderer';
 
@@ -250,18 +249,36 @@ function PatchCard({ patch, onApply, applied }: { patch: HtmlPatch; onApply: () 
   );
 }
 
-interface ModelOption {
-  providerKey: string;
-  modelId: string;
-  label: string;
-  hasKey: boolean;
+function ThinkingBlock({ reasoning, active }: { reasoning: string; active?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="mb-2 rounded-lg bg-surface-900/40 border border-slate-700/40 overflow-hidden">
+      <button
+        onClick={() => setExpanded(e => !e)}
+        className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] text-slate-400 hover:text-slate-200 transition-colors"
+      >
+        {active
+          ? <Loader2 size={11} className="animate-spin shrink-0 text-accent-blue" />
+          : <Brain size={11} className="shrink-0 text-accent-purple" />}
+        <span>{active ? '正在思考...' : '思考过程'}</span>
+        <span className="text-slate-600">{reasoning.trim().length} 字</span>
+        {expanded
+          ? <ChevronUp size={11} className="ml-auto shrink-0" />
+          : <ChevronDown size={11} className="ml-auto shrink-0" />}
+      </button>
+      {expanded && (
+        <div className="px-2.5 pb-2 pt-1.5 text-[11px] text-slate-500 whitespace-pre-wrap break-words max-h-56 overflow-y-auto scrollbar-thin border-t border-slate-700/30">
+          {reasoning}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({ job, resume, onResumeSaved, sourceHtml, onSourceHtmlChange }: Props, ref) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
-  const [modelReady, setModelReady] = useState<boolean | null>(null);
   const [evalLoading, setEvalLoading] = useState(false);
   const [appliedPatches, setAppliedPatches] = useState<Set<string>>(new Set());
   const [toolStatus, setToolStatus] = useState<string | null>(null);
@@ -269,14 +286,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-
-  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
-  const selectedProviderRef = useRef('');
-  const selectedModelRef = useRef('');
-  const [selectedLabel, setSelectedLabel] = useState('');
-  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
-  const [backgroundOpen, setBackgroundOpen] = useState(false);
-  const [backgroundText, setBackgroundText] = useState('');
 
   const editor = useEditor({
     extensions: [StarterKit, DomTag, Image.configure({ inline: false })],
@@ -326,70 +335,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
       }
     },
   }), [editor]);
-
-  const loadModels = useCallback(() => {
-    agentApi.getSettings().then(s => {
-      const providers = s.providers as Record<string, any>;
-      const customModels = s.custom_models || [];
-      const opts: ModelOption[] = [];
-      for (const [key, pconfig] of Object.entries(providers)) {
-        const hasKey = !!s.api_keys_set[key];
-        for (const m of pconfig.models || []) {
-          opts.push({
-            providerKey: key,
-            modelId: m.id,
-            label: `${pconfig.name_cn} · ${m.name}`,
-            hasKey,
-          });
-        }
-      }
-      for (const cm of customModels) {
-        opts.push({
-          providerKey: `custom:${cm.id}`,
-          modelId: cm.model_id,
-          label: `自定义 · ${cm.display_name || cm.model_id}`,
-          hasKey: true,
-        });
-      }
-      authApi.cloudModels().then(templates => {
-        for (const tpl of templates) {
-          opts.push({
-            providerKey: `cloud:${tpl.id}`,
-            modelId: tpl.model_id,
-            label: `官方 · ${tpl.display_name || tpl.model_id}`,
-            hasKey: true,
-          });
-        }
-        setModelOptions(opts.filter(o => o.hasKey || (o.providerKey === s.provider && o.modelId === s.model)));
-        const current = opts.find(o => o.providerKey === s.provider && o.modelId === s.model);
-        setSelectedLabel(current?.label || s.model);
-      }).catch(() => {
-        setModelOptions(opts.filter(o => o.hasKey || (o.providerKey === s.provider && o.modelId === s.model)));
-        const current = opts.find(o => o.providerKey === s.provider && o.modelId === s.model);
-        setSelectedLabel(current?.label || s.model);
-      });
-      selectedProviderRef.current = s.provider;
-      selectedModelRef.current = s.model;
-      const hasKey = s.provider.startsWith('cloud:') || s.provider.startsWith('custom:') || s.provider === 'custom'
-        ? true
-        : !!s.api_keys_set[s.provider];
-      setModelReady(hasKey);
-    }).catch(() => setModelReady(false));
-  }, []);
-
-  useEffect(() => { loadModels(); }, [messages, loadModels]);
-
-  useEffect(() => {
-    agentApi.listBackgrounds().then(profiles => {
-      if (profiles.length > 0) setBackgroundText(profiles[0].content || '');
-    }).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    const onModelsUpdated = () => loadModels();
-    window.addEventListener('models-updated', onModelsUpdated);
-    return () => window.removeEventListener('models-updated', onModelsUpdated);
-  }, [loadModels]);
 
   useEffect(() => {
     if (!resume) { setMessages([]); return; }
@@ -532,9 +477,10 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
 
     try {
       let fullText = '';
+      let fullReasoning = '';
       const collectedPatches: HtmlPatch[] = [];
       let turnSnapshotDepth: number | undefined;
-      for await (const chunk of agentApi.chatStream(resume.id, job.id, newMessages, backgroundText || undefined, abortController.signal)) {
+      for await (const chunk of agentApi.chatStream(resume.id, job.id, newMessages, undefined, abortController.signal)) {
         if (chunk.type === 'snapshot_depth' && chunk.depth !== undefined) {
           turnSnapshotDepth = chunk.depth;
           setMessages(prev => {
@@ -548,6 +494,19 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
           setSnapshotDepths(prev => [...prev, chunk.depth!]);
         } else if (chunk.type === 'text' && chunk.content) {
           fullText += chunk.content;
+        } else if (chunk.type === 'reasoning' && chunk.content) {
+          fullReasoning += chunk.content;
+        } else if (chunk.type === 'reasoning_to_text' && chunk.content) {
+          // 开头误判为思考的内容转回正文
+          fullText += chunk.content;
+          fullReasoning = fullReasoning.endsWith(chunk.content)
+            ? fullReasoning.slice(0, -chunk.content.length)
+            : '';
+        } else if (chunk.type === 'text_to_reasoning' && chunk.content) {
+          // 泄漏进正文的内部独白：从正文移除并归入可折叠的思考过程展示，避免刷屏
+          const idx = fullText.lastIndexOf(chunk.content);
+          if (idx >= 0) fullText = fullText.slice(0, idx) + fullText.slice(idx + chunk.content.length);
+          fullReasoning += (fullReasoning && !fullReasoning.endsWith('\n') ? '\n\n' : '') + chunk.content;
         } else if (chunk.type === 'patch' && chunk.resumePartId !== undefined && chunk.newHtml !== undefined) {
           const patch: HtmlPatch = { resumePartId: chunk.resumePartId, newHtml: chunk.newHtml };
           collectedPatches.push(patch);
@@ -559,25 +518,22 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
             argDesc = `(替换: ${s}${String(chunk.arguments.old_str).length > 40 ? '...' : ''})`;
           } else if (chunk.toolName === 'patch_file' && chunk.arguments?.section_id) {
             argDesc = `(section: ${partLabel(chunk.arguments.section_id)})`;
-          } else if (chunk.toolName === 'read_file' && chunk.arguments?.section_id) {
-            argDesc = `(section: ${partLabel(chunk.arguments.section_id)})`;
           } else if (chunk.arguments?.path) {
             argDesc = `(${chunk.arguments.path})`;
           }
           setToolStatus(`正在调用工具: ${chunk.toolName} ${argDesc}`);
           fullText += `\n🔧 调用 ${chunk.toolName} ${argDesc}\n`;
         } else if (chunk.type === 'tool_result' && chunk.toolName) {
-          const preview = chunk.result ? chunk.result.slice(0, 100) : '';
-          setToolStatus(`工具 ${chunk.toolName} 完成: ${preview}`);
-          fullText += `\n✅ ${chunk.toolName} 完成: ${preview}\n`;
-        } else if (chunk.type === 'retry' && chunk.content) {
-          fullText = `🔄 ${chunk.content}\n\n`;
+          setToolStatus(`工具 ${chunk.toolName} 执行完成`);
+          fullText += `\n✅ ${chunk.toolName} 完成\n`;
         } else if (chunk.type === 'error' && chunk.content) {
           fullText += chunk.content;
+        } else if (chunk.type === 'warning' && chunk.content) {
+          fullText += (fullText && !fullText.endsWith('\n') ? '\n' : '') + chunk.content;
         }
         setMessages(prev => {
           const copy = [...prev];
-          copy[copy.length - 1] = { role: 'assistant', content: fullText, patches: collectedPatches.length > 0 ? [...collectedPatches] : undefined };
+          copy[copy.length - 1] = { role: 'assistant', content: fullText, reasoning: fullReasoning || undefined, patches: collectedPatches.length > 0 ? [...collectedPatches] : undefined };
           return copy;
         });
       }
@@ -597,15 +553,16 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
           fullText = parsed.cleanedText;
           setMessages(prev => {
             const copy = [...prev];
-            copy[copy.length - 1] = { role: 'assistant', content: fullText, patches: collectedPatches };
+            copy[copy.length - 1] = { role: 'assistant', content: fullText, reasoning: fullReasoning || undefined, patches: collectedPatches };
             return copy;
           });
         }
       }
 
-      const finalMessages = [...newMessages, { role: 'assistant' as const, content: fullText, patches: collectedPatches.length > 0 ? collectedPatches : undefined }];
+      const finalMessages = [...newMessages, { role: 'assistant' as const, content: fullText, reasoning: fullReasoning || undefined, patches: collectedPatches.length > 0 ? collectedPatches : undefined }];
       await agentApi.saveConversation(resume.id, finalMessages.map(m => {
         const base: any = { role: m.role, content: m.content };
+        if (m.reasoning) base.reasoning = m.reasoning;
         if (m.references) base.references = m.references;
         if (m.scorecard) base.scorecard = m.scorecard;
         if (m.patches) base.patches = m.patches;
@@ -711,17 +668,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
     }
   };
 
-  const handleModelSelect = async (opt: ModelOption) => {
-    try {
-      await agentApi.updateSettings({ provider: opt.providerKey, model: opt.modelId });
-      selectedProviderRef.current = opt.providerKey;
-      selectedModelRef.current = opt.modelId;
-      setSelectedLabel(opt.label);
-      setModelReady(opt.hasKey);
-      setModelDropdownOpen(false);
-    } catch { /* */ }
-  };
-
   const copyResult = () => {
     const last = messages.filter(m => m.role === 'assistant' && m.content).pop();
     if (last) navigator.clipboard.writeText(last.content);
@@ -752,13 +698,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
 
   return (
     <div className="flex flex-col h-full">
-      {modelReady === false && (
-        <div className="mx-3 mt-3 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 flex items-center gap-2 text-xs text-red-400">
-          <AlertTriangle size={13} className="shrink-0" />
-          <span>当前模型未配置 API Key，对话将失败。请在下方切换模型。</span>
-        </div>
-      )}
-
       <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin space-y-3 p-3 pb-1">
         {loadingHistory ? (
           <div className="flex items-center justify-center py-8">
@@ -811,21 +750,28 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
                       ))}
                     </div>
                   )}
-                  {msg.role === 'assistant'
-                    ? (msg.content ? <AssistantMessageRenderer content={msg.content} /> : (streaming && i === messages.length - 1 ? <span className="text-slate-500">思考中...</span> : null))
-                    : (
-                      <>
-                        {msg.images && msg.images.length > 0 && (
-                          <div className="flex flex-wrap gap-1.5 mb-1.5">
-                            {msg.images.map((imgSrc, imgIdx) => (
-                              <img key={imgIdx} src={imgSrc} alt="上传图片" className="max-h-32 max-w-[200px] rounded-md border border-slate-600/30 object-contain" />
-                            ))}
-                          </div>
-                        )}
-                        {msg.content}
-                      </>
-                    )
-                  }
+                  {msg.role === 'assistant' && msg.content && <AssistantMessageRenderer content={msg.content} />}
+                  {msg.role === 'assistant' && !msg.content && streaming && i === messages.length - 1 && !msg.reasoning && (
+                    <span className="text-slate-500">思考中...</span>
+                  )}
+                  {msg.role === 'assistant' && msg.reasoning && (
+                    <ThinkingBlock
+                      reasoning={msg.reasoning}
+                      active={streaming && i === messages.length - 1}
+                    />
+                  )}
+                  {msg.role !== 'assistant' && (
+                    <>
+                      {msg.images && msg.images.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mb-1.5">
+                          {msg.images.map((imgSrc, imgIdx) => (
+                            <img key={imgIdx} src={imgSrc} alt="上传图片" className="max-h-32 max-w-[200px] rounded-md border border-slate-600/30 object-contain" />
+                          ))}
+                        </div>
+                      )}
+                      {msg.content}
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -855,104 +801,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel({
           <div className="flex items-center gap-2 px-3 py-1.5 mb-2 text-xs text-accent-blue bg-accent-blue/10 rounded-lg border border-accent-blue/20">
             <Loader2 size={12} className="animate-spin" />
             {toolStatus}
-          </div>
-        )}
-
-        <div className="flex items-center gap-2 mb-2">
-          <div className="relative flex-1">
-            <button
-              onClick={() => setModelDropdownOpen(p => !p)}
-              className={`w-full flex items-center justify-between gap-1 px-2.5 py-1 text-xs rounded-lg transition-colors ${
-                modelReady === false
-                  ? 'bg-red-500/10 text-red-400 border border-red-500/30'
-                  : 'bg-surface-900/60 text-slate-400 border border-slate-700/40 hover:bg-surface-700/40'
-              }`}
-            >
-              <span className="flex items-center gap-1.5 truncate">
-                <Cpu size={11} className="shrink-0" />
-                <span className="truncate">{selectedLabel || '选择模型'}</span>
-                {modelReady === false && <span className="text-[10px] shrink-0">(未配置Key)</span>}
-              </span>
-              <ChevronDown size={11} className="shrink-0" />
-            </button>
-            {modelDropdownOpen && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setModelDropdownOpen(false)} />
-                <div className="absolute left-0 bottom-full mb-1 z-50 w-full max-h-64 overflow-y-auto scrollbar-thin bg-surface-800 rounded-lg border border-slate-700/50 shadow-2xl animate-fade-in">
-                  <div className="p-1 space-y-0.5">
-                    {Object.entries(
-                      modelOptions.reduce((acc, opt) => {
-                        const providerName = opt.label.split(' · ')[0];
-                        if (!acc[providerName]) acc[providerName] = [];
-                        acc[providerName].push(opt);
-                        return acc;
-                      }, {} as Record<string, ModelOption[]>)
-                    ).map(([providerName, opts]) => (
-                      <div key={providerName}>
-                        <div className={`px-2 py-1 text-[10px] font-medium uppercase tracking-wider ${providerName === '官方' ? 'text-emerald-400/80' : 'text-slate-500'}`}>
-                          {providerName === '官方' ? '🛡 官方模型（云端代理）' : providerName}
-                        </div>
-                        {opts.map(opt => {
-                          const isActive = selectedProviderRef.current === opt.providerKey && selectedModelRef.current === opt.modelId;
-                          return (
-                            <button
-                              key={`${opt.providerKey}-${opt.modelId}`}
-                              onClick={() => handleModelSelect(opt)}
-                              className={`w-full text-left px-2.5 py-1.5 rounded-md text-xs flex items-center gap-1.5 transition-colors ${
-                                opt.providerKey.startsWith('cloud:') && isActive ? 'bg-emerald-500/15 text-emerald-400' :
-                                isActive ? 'bg-accent-blue/15 text-accent-blue' : 'text-slate-300 hover:bg-surface-700/40'
-                              }`}
-                            >
-                              {isActive && <Check size={10} className="shrink-0" />}
-                              <span className={`truncate ${isActive ? '' : 'ml-3.5'}`}>{opt.label.split(' · ').slice(1).join(' · ') || opt.label}</span>
-                              {!opt.hasKey && <span className="text-[9px] text-slate-600 shrink-0 ml-auto">未配置</span>}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ))}
-                    {modelOptions.length === 0 && (
-                      <p className="text-xs text-slate-500 px-2.5 py-2">暂无可用模型</p>
-                    )}
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-          <button
-            onClick={() => setBackgroundOpen(p => !p)}
-            className={`flex items-center gap-1 px-2.5 py-1 text-xs rounded-lg border transition-colors shrink-0 ${
-              backgroundOpen
-                ? 'bg-accent-purple/15 text-accent-purple border-accent-purple/30'
-                : 'bg-surface-900/60 text-slate-400 border-slate-700/40 hover:bg-surface-700/40'
-            } ${backgroundText.trim() ? 'ring-1 ring-accent-purple/30' : ''}`}
-            title="补充个人经历给 AI"
-          >
-            <UserCircle size={12} />
-            背景
-            {backgroundText.trim() && <span className="w-1.5 h-1.5 rounded-full bg-accent-purple" />}
-          </button>
-        </div>
-
-        {backgroundOpen && (
-          <div className="mb-2">
-            <textarea
-              value={backgroundText}
-              onChange={e => setBackgroundText(e.target.value)}
-              onBlur={() => {
-                if (backgroundText.trim()) {
-                  agentApi.listBackgrounds().then(profiles => {
-                    if (profiles.length > 0) {
-                      agentApi.updateBackground(profiles[0].id, { content: backgroundText });
-                    } else {
-                      agentApi.createBackground({ name: '默认', content: backgroundText });
-                    }
-                  }).catch(() => {});
-                }
-              }}
-              placeholder="补充你的个人经历、技能、项目等背景信息，AI 修改简历时会参考这些内容…"
-              className="w-full h-20 px-3 py-2 text-xs bg-surface-900/60 border border-slate-700/50 rounded-lg text-slate-300 placeholder:text-slate-600 resize-none focus:outline-none focus:border-accent-blue/50 transition-colors"
-            />
           </div>
         )}
 

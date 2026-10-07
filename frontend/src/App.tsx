@@ -19,6 +19,7 @@ import { ResumeAgentPage } from './components/resume/ResumeAgentPage';
 import { AICopyPage } from './components/AICopyPage';
 import { JobAnalysisPage } from './components/JobAnalysisPage';
 import { JobManagePage } from './components/JobManagePage';
+import { LoginGate } from './components/LoginGate';
 import { api, type TaskInfo } from './api/client';
 import { authApi } from './api/authApi';
 import { updateApi, type UpdateStatus } from './api/updateApi';
@@ -40,6 +41,9 @@ export default function App() {
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const [skipped, setSkipped] = useState(false);
   const canUseApp = authPhase === 'active' || (authPhase === 'guest' && skipped);
+  /** 自动打招呼等功能需登录：游客模式下拦截 */
+  const loggedIn = authPhase === 'active';
+  const requestLogin = () => window.dispatchEvent(new CustomEvent('request-login'));
 
   // 启动 + 轮询鉴权状态：未登录/被封禁时锁定在登录页
   useEffect(() => {
@@ -69,11 +73,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!canUseApp) return;
+    // 打招呼任务接口需登录，游客模式不轮询（否则会刷 401 错误横幅）
+    if (!loggedIn) return;
     refresh().catch((e) => setError(`后端连接失败：${e.message}`));
     const t = setInterval(() => { refresh().catch(() => {}); }, 5000);
     return () => clearInterval(t);
-  }, [refresh, canUseApp]);
+  }, [refresh, loggedIn]);
 
   // 登录后轮询更新状态（60s），sidecar 已缓存云端结果，本地接口开销极小
   useEffect(() => {
@@ -113,28 +118,34 @@ export default function App() {
   const renderHome = () => (
     <div className="p-5 space-y-4 animate-fade-in overflow-y-auto scrollbar-thin h-full">
       <WelcomeBanner />
-      <StatsGrid todaySent={todaySent} dailyLimit={dailyLimit} runningTasks={runningCount} totalTasks={tasks.length} />
+      {loggedIn && (
+        <StatsGrid todaySent={todaySent} dailyLimit={dailyLimit} runningTasks={runningCount} totalTasks={tasks.length} />
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-        <DashboardTasks
-          tasks={tasks}
-          selectedId={selectedId}
-          onSelect={select}
-          onViewAll={() => setActiveMenu('tasks')}
-          onCreateTask={() => { setEditing(null); setShowNew(true); }}
-          onStart={(id) => handleAction(id, () => api.start(id))}
-          onPause={(id) => handleAction(id, () => api.pause(id))}
-          onResume={(id) => handleAction(id, () => api.resume(id))}
-          onStop={(id) => handleAction(id, () => api.stop(id))}
-          onLogin={(id) => handleAction(id, () => api.login(id))}
-          onEdit={(id) => { const task = tasks.find(t => t.id === id); if (task) { setEditing(task); setShowNew(true); } }}
-          onDelete={(id) => { if (confirm('确认删除此任务？')) handleAction(id, () => api.remove(id)); }}
-          onRefreshLogin={(id) => handleAction(id, () => api.login(id))}
-        />
+        {loggedIn ? (
+          <DashboardTasks
+            tasks={tasks}
+            selectedId={selectedId}
+            onSelect={select}
+            onViewAll={() => setActiveMenu('tasks')}
+            onCreateTask={() => { setEditing(null); setShowNew(true); }}
+            onStart={(id) => handleAction(id, () => api.start(id))}
+            onPause={(id) => handleAction(id, () => api.pause(id))}
+            onResume={(id) => handleAction(id, () => api.resume(id))}
+            onStop={(id) => handleAction(id, () => api.stop(id))}
+            onLogin={(id) => handleAction(id, () => api.login(id))}
+            onEdit={(id) => { const task = tasks.find(t => t.id === id); if (task) { setEditing(task); setShowNew(true); } }}
+            onDelete={(id) => { if (confirm('确认删除此任务？')) handleAction(id, () => api.remove(id)); }}
+            onRefreshLogin={(id) => handleAction(id, () => api.login(id))}
+          />
+        ) : (
+          <LoginGate />
+        )}
         <ResumeAgentCard onNavigate={() => setActiveMenu('resume')} />
-        <LogsPanel selectedTask={selected} />
+        {loggedIn && <LogsPanel selectedTask={selected} />}
         <QuickActions
-          onCreateTask={() => { setEditing(null); setShowNew(true); }}
+          onCreateTask={loggedIn ? () => { setEditing(null); setShowNew(true); } : requestLogin}
           onAICopy={() => setActiveMenu('ai-copy')}
           onSystemSettings={() => setActiveMenu('system-settings')}
         />
@@ -214,11 +225,11 @@ export default function App() {
     switch (activeMenu) {
       case 'home':
       case 'auto-greet': return renderHome();
-      case 'tasks': return renderTasks();
+      case 'tasks': return loggedIn ? renderTasks() : <LoginGate fullPage />;
       case 'templates': return renderPlaceholder('话术模板', '管理招呼话术模板');
       case 'accounts': return <ModelManagement />;
       case 'ai-copy': return null;
-      case 'job-manage': return <JobManagePage />;
+      case 'job-manage': return loggedIn ? <JobManagePage /> : <LoginGate fullPage title="岗位管理需要登录后使用" subtitle="登录后即可管理岗位与打招呼记录" />;
       case 'job-analysis': return null;
       case 'system-settings': return <SystemSettingsPage userAccount={userAccount} />;
       default: return renderHome();

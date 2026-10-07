@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Tuple
 
 from ..schemas.task import AIConfig
-from .resume_provider import complete_response_with_provider, CUSTOM_PROVIDER_KEY
+from .resume_provider import complete_response_with_provider, CUSTOM_PROVIDER_KEY, is_cloud_provider
 
 _SYSTEM_PROMPT = (
     "你是一位资深求职打招呼助手。你的任务是根据招聘JD和求职者的背景，判断匹配度并生成让HR觉得求职者很适合该岗位的招呼语。\n\n"
@@ -43,7 +43,8 @@ def _is_managed_provider(provider: str) -> bool:
         return False
     if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:") or provider == CUSTOM_PROVIDER_KEY:
         return True
-    return False
+    # 云端官方模型（cloud:xxx）：密钥由云端代理管理，无需本地配置 API Key
+    return is_cloud_provider(provider)
 
 
 def _clean_result(result: str) -> str:
@@ -77,7 +78,7 @@ async def generate_greeting(config: AIConfig, jd_text: str, keyword: str = "", r
             max_tokens=300,
         )
     else:
-        raise RuntimeError("招呼语仅支持在「模型管理」中配置的自定义模型，请检查 provider 配置")
+        raise RuntimeError("招呼语仅支持「模型管理」中配置的自定义模型或云端官方模型，请检查 provider 配置")
 
     result = _clean_result(result)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from pathlib import Path
 from typing import AsyncGenerator, Dict, Optional, Tuple
@@ -25,6 +26,338 @@ except ImportError:
     AsyncOpenAI = None  # type: ignore
     OpenAI = None  # type: ignore
 
+_DEBUG_LOG_DIR = Path(__file__).resolve().parents[2] / "debug_logs"
+
+# 前端回显的工具调用痕迹行（🔧 调用 xxx / ✅ xxx 完成），模型会逐字模仿它们伪造工具轮次，
+# 回放历史时必须剥除，避免污染上下文导致伪调用
+_PSEUDO_TOOL_TRACE_RE = re.compile(
+    r"^[ \t\-*·（\[\{]*(?:[\U0001F300-\U0001FAFF☀-➿][ \t\u3000]*)?(?:调用|执行|正在调用)[ \t\u3000]*(?:read_file|patch_file|write_file)\b[^\n]*"
+    r"|^[ \t\-*·（\[\{]*(?:[\U0001F300-\U0001FAFF☀-➿][ \t\u3000]*)?(?:read_file|patch_file|write_file)[ \t\u3000]*(?:完成|调用成功|执行成功|已完成|已读取|已替换|已写入|修改成功)[^\n]*"
+    r"|^[ \t\-*·（\[\{]*(?:[\U0001F300-\U0001FAFF☀-➿][ \t\u3000]*)?(?:read_file|patch_file|write_file)[ \t\u3000]*[^\n]{0,80}\btool_use_id\b[^\n]*",
+    re.MULTILINE,
+)
+# DeepSeek 等兼容端点泄漏到正文里的原生函数调用特殊标记（如 <|DSML|...>、＜｜xx｜＞）
+_SPECIAL_TOKEN_LEAK_RE = re.compile(r"[<＜｜|][a-zA-Z0-9_｜|<]{0,24}(?:DSML|tool_call|parameter)[^>＞\n]{0,80}[>＞]")
+
+
+def _blocks_to_text(content) -> str:
+    """Anthropic content blocks / 纯文本 → 拼接后的纯文本。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", "") or "")
+        return "\n".join(p for p in parts if p)
+    return "" if content is None else json.dumps(content, ensure_ascii=False)
+
+
+def _strip_pseudo_tool_text(text: str) -> str:
+    """剥除文本里的伪调用痕迹行与泄漏的原生特殊标记。"""
+    return _SPECIAL_TOKEN_LEAK_RE.sub("", _PSEUDO_TOOL_TRACE_RE.sub("", text)).strip()
+
+
+def sanitize_anthropic_history(messages: list) -> list:
+    """归一化回放的对话历史，防模型模仿伪工具调用痕迹。
+
+    DeepSeek 等 OpenAI 风格 provider 不识别 Anthropic 块，一旦回放含 tool_use/tool_result
+    的历史，模型会模仿其文本形态输出伪工具调用（参数里甚至夹带 ｜DSML｜ 特殊标记）。规则：
+    - assistant + tool_use 块 → OpenAI 的 tool_calls 结构（后续 tool 结果消息保持紧随）
+    - user + tool_result 块 → 按 tool_use_id 配对转成 role=tool 消息
+    - 所有 user/assistant 文本统一剥除 🔧/✅ 伪调用痕迹行与泄漏的原生特殊标记
+      （OpenAI 风格历史同样适用，不依赖 Anthropic 块存在）
+    - 无需任何修改时原样返回同一列表（零开销透传）
+    """
+    def _has_tool_blocks(m: dict) -> bool:
+        content = m.get("content")
+        if not isinstance(content, list):
+            return False
+        return any(
+            isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result")
+            for b in content
+        )
+
+    def _needs_strip(m: dict) -> bool:
+        return (
+            m.get("role") in ("assistant", "user")
+            and isinstance(m.get("content"), str)
+            and bool(_PSEUDO_TOOL_TRACE_RE.search(m["content"]) or _SPECIAL_TOKEN_LEAK_RE.search(m["content"]))
+        )
+
+    if not messages or not (any(_has_tool_blocks(m) for m in messages) or any(_needs_strip(m) for m in messages)):
+        return messages
+
+    out: list = []
+    emitted_tool_ids: set = set()
+    group_end = 0  # 最近一段 assistant(tool_calls)+tool... 块的插入尾部位置
+    for m in messages:
+        role = m.get("role", "")
+        content = m.get("content")
+        if not _has_tool_blocks(m):
+            # 已是 OpenAI 形态：assistant tool_calls / role=tool 组内顺序合法，原样透传；
+            # 普通文本剥除伪调用痕迹后透传
+            if _needs_strip(m):
+                out.append({**m, "content": _strip_pseudo_tool_text(content)})
+            else:
+                out.append(m)
+            continue
+        if role == "assistant":
+            text = _strip_pseudo_tool_text(_blocks_to_text(content))
+            tc_list = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    try:
+                        args_str = json.dumps(block.get("input") or {}, ensure_ascii=False)
+                    except Exception:
+                        args_str = "{}"
+                    tc_list.append({
+                        "id": block.get("id") or f"call_hist_{len(out)}_{len(tc_list)}",
+                        "type": "function",
+                        "function": {"name": block.get("name", ""), "arguments": args_str},
+                    })
+            nm = dict(m)
+            nm.pop("content", None)
+            if text:
+                nm["content"] = text
+            if tc_list:
+                nm["tool_calls"] = (m.get("tool_calls") or []) + tc_list
+            out.append(nm)
+            group_end = len(out)
+        elif role == "user":
+            # tool_result 块 → role=tool 消息；必须插回其对应 assistant tool_calls 之后，
+            # 避免打乱 OpenAI 的 assistant(tool_calls) → tool... 分组而触发 400
+            pos = group_end
+            rest_texts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tid = block.get("tool_use_id", "")
+                    if not tid or tid in emitted_tool_ids:
+                        continue
+                    rc = block.get("content", "")
+                    if isinstance(rc, list):
+                        rc = _blocks_to_text(rc)
+                    out.insert(pos, {"role": "tool", "tool_call_id": tid, "content": str(rc)})
+                    emitted_tool_ids.add(tid)
+                    pos += 1
+                    group_end = max(group_end, pos)
+                elif isinstance(block, dict) and block.get("type") == "text":
+                    rest_texts.append(block.get("text", "") or "")
+                elif isinstance(block, str):
+                    rest_texts.append(block)
+            if rest_texts:
+                out.append({**m, "content": _strip_pseudo_tool_text("\n".join(t for t in rest_texts if t))})
+
+    # 兜底：assistant 带 tool_calls 但结果缺失/游离的 tool 消息会导致部分 provider 400，
+    # 按 tool_call_id 配对重排，未配对的 tool_calls 补占位结果、游离 tool 消息丢弃
+    final: list = []
+    i = 0
+    pending_ids: list = []
+    while i < len(out):
+        m = out[i]
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            final.append(m)
+            pending_ids = [tc.get("id") for tc in m["tool_calls"]]
+            i += 1
+            tool_map: dict = {}
+            while i < len(out) and out[i].get("role") == "tool":
+                tool_map[out[i].get("tool_call_id", "")] = out[i].get("content", "")
+                i += 1
+            for tid in pending_ids:
+                if tid in tool_map:
+                    final.append({"role": "tool", "tool_call_id": tid, "content": tool_map[tid]})
+                else:
+                    final.append({"role": "tool", "tool_call_id": tid, "content": "（历史结果缺失，内容未截断，无需重读）"})
+            pending_ids = []
+            continue
+        if m.get("role") == "tool":
+            i += 1  # 游离 tool 消息
+            continue
+        final.append(m)
+        i += 1
+    return final
+
+
+class ConversationDebugLog:
+    """一次对话一个 debug 日志文件（受 DEBUG_LOG_ENABLED 开关控制）。
+
+    人类可读的文本格式，按时间顺序记录完整工具调用链路：
+
+      ────────── 组装请求#1 (tool_choice=auto) ──────────
+      [system] ...
+      [user] 北京天气怎么样？
+      ← LLM 返回 (finish_reason=tool_calls)
+      [assistant] {"tool": "get_weather", "args": {"city": "北京"}}
+      ← 执行工具 get_weather {"city": "北京"}
+      [tool] 晴，25°C
+      ────────── 组装请求#2 ... ──────────
+      ← LLM 返回 (finish_reason=stop)
+      [assistant] 北京晴，25度，适合跑步
+    """
+
+    def __init__(self):
+        from datetime import datetime
+
+        self.enabled = DEBUG_LOG_ENABLED
+        self.current_round: int = -1
+        self.path: Optional[Path] = None
+        self._round_count = 0      # 已发出的请求轮数
+        self._attempt_idx = 0      # 当前轮内的尝试序号（required→auto 重试）
+        self._tool_call_count = 0  # 工具执行总次数
+        if not self.enabled:
+            return
+        conv_id = uuid.uuid4().hex[:12]
+        now = datetime.now()
+        self.path = _DEBUG_LOG_DIR / f"conv_{now.strftime('%Y%m%d_%H%M%S')}_{conv_id}.log"
+        try:
+            _DEBUG_LOG_DIR.mkdir(exist_ok=True)
+            self.path.write_text("", encoding="utf-8")
+        except Exception:
+            self.enabled = False
+            return
+        self._bar("═")
+        self._write(f"对话调试日志 | 会话: {conv_id} | 开始: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+        self._bar("═")
+        self._write("")
+
+    # ── 基础写入 ──
+
+    def _write(self, text: str = "") -> None:
+        try:
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(text + "\n")
+        except Exception:
+            pass
+
+    def _bar(self, char: str = "─") -> None:
+        self._write(char * 64)
+
+    @staticmethod
+    def _fmt_message(m: dict) -> str:
+        """把一条消息格式化为 [role] 内容 的可读行；tool_calls 用 {"tool":..,"args":..} 样式。"""
+        role = m.get("role", "?")
+        content = m.get("content", "")
+        if not isinstance(content, str):
+            try:
+                content = json.dumps(content, ensure_ascii=False)
+            except Exception:
+                content = str(content)
+        lines: list = []
+        if content:
+            lines.append(f"[{role}] {content}")
+        for tc in m.get("tool_calls") or []:
+            fn = tc.get("function", {})
+            raw = fn.get("arguments", "")
+            if isinstance(raw, str):
+                try:
+                    args = json.loads(raw) if raw else {}
+                except Exception:
+                    args = raw
+            else:
+                args = raw
+            lines.append(f"[{role}] " + json.dumps({"tool": fn.get("name"), "args": args}, ensure_ascii=False))
+        if not lines:
+            lines.append(f"[{role}] (空)")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _parse_maybe_json(value):
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except Exception:
+                return value
+        return value
+
+    # ── 事件记录（由 stream_with_tools / chat 调用） ──
+
+    def start_round(self, *, model: str, messages: list, tools: list, tool_choice) -> int:
+        """新一轮 LLM 请求：原样打印本轮实际发送的完整请求体（工具定义 + 全部消息）。"""
+        if not self.enabled:
+            return -1
+        self._round_count += 1
+        self.current_round = self._round_count - 1
+        self._attempt_idx = 0
+        total_chars = sum(
+            len(m.get("content")) if isinstance(m.get("content"), str) else 0
+            for m in messages
+        )
+        self._bar()
+        self._write(f"组装请求#{self._round_count} (model={model}, tool_choice={tool_choice}, {len(messages)}条消息/约{total_chars}字符)")
+        self._bar()
+        if tools:
+            self._write("工具定义:")
+            for t in tools:
+                fn = t.get("function", {})
+                self._write(f"  - {fn.get('name')}: {fn.get('description', '')}")
+                if fn.get("parameters"):
+                    self._write(f"    参数: {json.dumps(fn['parameters'], ensure_ascii=False)}")
+            self._write("")
+        for m in messages:
+            self._write(self._fmt_message(m))
+        self._write("")
+        return self.current_round
+
+    def log_attempt(self, round_no: int, *, tool_choice, finish_reason, content, tool_calls, error=None) -> None:
+        """记录一次 LLM API 调用返回：finish_reason / content / tool_calls。"""
+        if not self.enabled or round_no < 0:
+            return
+        self._attempt_idx += 1
+        tag = f"[尝试{self._attempt_idx} tool_choice={tool_choice}] " if self._attempt_idx > 1 else ""
+        if error:
+            self._write(f"← LLM 返回 {tag}(finish_reason={finish_reason}) ⚠ 失败: {error}")
+        else:
+            self._write(f"← LLM 返回 {tag}(finish_reason={finish_reason})")
+        if content:
+            self._write(f"[assistant] {content}")
+        for tc in tool_calls or []:
+            args = self._parse_maybe_json(tc.get("arguments"))
+            self._write("[assistant] " + json.dumps({"tool": tc.get("name"), "args": args}, ensure_ascii=False))
+        self._write("")
+
+    def log_tool_result(self, round_no: int, *, name: str, arguments, result) -> None:
+        """记录工具执行的参数与完整返回内容。"""
+        if not self.enabled or round_no < 0:
+            return
+        self._tool_call_count += 1
+        args = self._parse_maybe_json(arguments)
+        if args:
+            self._write(f"← 执行工具 {name} {json.dumps(args, ensure_ascii=False)}")
+        else:
+            self._write(f"← 执行工具 {name}")
+        text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+        self._write(f"[tool] {text}")
+        self._write("")
+
+    def log_message(self, role: str, content, note: str = None) -> None:
+        """记录系统/框架追加到对话的消息（重试提示、强制工具提示等）。"""
+        if not self.enabled:
+            return
+        prefix = f"({note}) " if note else ""
+        text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+        self._write(f"[{role}] {prefix}{text}")
+
+    def log_note(self, text: str) -> None:
+        """记录系统行为提示（上下文压缩、参数修复、临时注入等）。"""
+        if not self.enabled:
+            return
+        self._write(f"⚠ {text}")
+        self._write("")
+
+    def finish(self, final_text: str) -> None:
+        """对话结束：汇总轮次与工具调用次数，记录最终回复文本。"""
+        if not self.enabled:
+            return
+        from datetime import datetime
+
+        self._bar("═")
+        self._write(f"对话结束 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 共 {self._round_count} 轮请求, {self._tool_call_count} 次工具调用")
+        self._write("最终回复:")
+        self._write(final_text or "(无)")
+        self._bar("═")
+
 
 async def test_connection(
     provider: str,
@@ -41,7 +374,7 @@ async def test_connection(
         if not token:
             return False, "未登录，无法测试官方模型"
         try:
-            async for ev in stream_cloud_chat(token, template_id, [{"role": "user", "content": "Hi"}], max_tokens=10):
+            async for ev in stream_cloud_chat(token, template_id, [{"role": "user", "content": "Hi"}], max_tokens=10, source="test"):
                 if ev.get("type") == "error":
                     return False, ev["content"]
                 if ev.get("type") == "text" and ev.get("content"):
@@ -100,7 +433,9 @@ async def test_connection(
 async def stream_response(
     system: str,
     messages: list,
+    source: str = "resume",
 ) -> AsyncGenerator[str, None]:
+    """流式调用当前配置的模型。source 为额度用量明细的功能来源。"""
     settings = load_settings()
     provider = settings.get("provider", "")
     model = settings.get("model", "")
@@ -116,7 +451,7 @@ async def stream_response(
             yield "⚠️ 未登录，请先登录后再使用官方模型。"
             return
         openai_messages = [{"role": "system", "content": system}] + messages
-        async for ev in stream_cloud_chat(token, template_id, openai_messages):
+        async for ev in stream_cloud_chat(token, template_id, openai_messages, source=source):
             if ev["type"] == "text":
                 yield ev["content"]
             elif ev["type"] == "error":
@@ -155,14 +490,14 @@ async def stream_response(
         yield text
 
 
-async def complete_response(system: str, messages: list) -> str:
+async def complete_response(system: str, messages: list, source: str = "resume") -> str:
     parts: list[str] = []
-    async for text in stream_response(system, messages):
+    async for text in stream_response(system, messages, source=source):
         parts.append(text)
     return "".join(parts)
 
 
-async def complete_response_with_provider(provider: str, model: str, system: str, messages: list, max_tokens: int = 300) -> str:
+async def complete_response_with_provider(provider: str, model: str, system: str, messages: list, max_tokens: int = 300, source: str = "greeting") -> str:
     """使用指定 provider+model 调用模型，返回完整文本。用于 AI 招呼语等非全局配置场景。"""
     if is_cloud_provider(provider):
         template_id = get_cloud_template_id(provider)
@@ -174,7 +509,7 @@ async def complete_response_with_provider(provider: str, model: str, system: str
             raise RuntimeError("未登录，无法使用官方模型")
         openai_messages = [{"role": "system", "content": system}] + messages
         parts: list[str] = []
-        async for ev in stream_cloud_chat(token, template_id, openai_messages, max_tokens=max_tokens):
+        async for ev in stream_cloud_chat(token, template_id, openai_messages, max_tokens=max_tokens, source=source):
             if ev["type"] == "text":
                 parts.append(ev["content"])
             elif ev["type"] == "error":
@@ -213,7 +548,7 @@ async def complete_response_with_provider(provider: str, model: str, system: str
     raise RuntimeError(f"不支持的 Provider: {provider}（本应用仅支持自定义模型）")
 
 
-def complete_response_sync(system: str, messages: list, *, max_tokens: int = 8192, timeout: float = 600.0) -> str:
+def complete_response_sync(system: str, messages: list, *, max_tokens: int = 8192, timeout: float = 600.0, source: str = "resume") -> str:
     """同步调用当前模型管理配置的模型，返回完整文本。供 resume_parser 等同步场景使用。"""
     settings = load_settings()
     provider = settings.get("provider", "")
@@ -230,7 +565,7 @@ def complete_response_sync(system: str, messages: list, *, max_tokens: int = 819
 
         async def _do_cloud():
             parts: list[str] = []
-            async for ev in stream_cloud_chat(token, template_id, openai_messages, max_tokens=max_tokens):
+            async for ev in stream_cloud_chat(token, template_id, openai_messages, max_tokens=max_tokens, source=source):
                 if ev["type"] == "text":
                     parts.append(ev["content"])
                 elif ev["type"] == "error":
@@ -324,6 +659,8 @@ async def stream_with_tools(
     max_tokens: int = 8192,
     timeout: float = 1800.0,
     tool_choice: str = "auto",
+    debug_log: Optional[ConversationDebugLog] = None,
+    source: str = "chat",
 ) -> AsyncGenerator[dict, None]:
     """带工具调用的流式对话（OpenAI 兼容格式）。
 
@@ -331,6 +668,10 @@ async def stream_with_tools(
       - {"type": "text", "content": "..."}      文本片段
       - {"type": "tool_calls", "calls": [...]}   完整的 tool_calls（流结束后）
       - {"type": "done"}                         本轮流结束
+
+    debug_log: 传入 ConversationDebugLog 可将本轮请求/响应细节
+    追加到该对话的 debug 日志文件中（一次对话一个文件）。
+    source: 功能来源（额度用量明细），默认 chat（简历 Agent 对话）。
     """
     settings = load_settings()
     provider = settings.get("provider", "")
@@ -348,15 +689,39 @@ async def stream_with_tools(
             yield {"type": "text", "content": "⚠️ 未登录，请先登录后再使用官方模型。"}
             yield {"type": "done"}
             return
-        openai_messages = [{"role": "system", "content": system}] + messages
+        openai_messages = [{"role": "system", "content": system}] + sanitize_anthropic_history(messages)
+        _round_no = -1
+        if debug_log is not None:
+            _round_no = debug_log.start_round(
+                model=f"cloud:{template_id}",
+                messages=openai_messages, tools=tools, tool_choice=tool_choice,
+            )
+        _cloud_texts: list = []
+        _cloud_calls: list = []
+        _cloud_err: Optional[str] = None
         try:
-            async for ev in stream_cloud_chat(token, template_id, openai_messages, max_tokens=max_tokens, tools=tools, tool_choice=tool_choice):
+            async for ev in stream_cloud_chat(token, template_id, openai_messages, max_tokens=max_tokens, tools=tools, tool_choice=tool_choice, source=source):
                 if ev["type"] == "error":
+                    _cloud_err = ev["content"]
                     yield {"type": "text", "content": ev["content"]}
                 else:
+                    if ev.get("type") == "text":
+                        _cloud_texts.append(ev.get("content", ""))
+                    elif ev.get("type") == "tool_calls":
+                        _cloud_calls = ev.get("calls", [])
                     yield ev
         except Exception as e:
+            _cloud_err = str(e)[:300]
             yield {"type": "text", "content": f"\n\n[云端调用失败: {str(e)[:200]}]"}
+        if debug_log is not None:
+            debug_log.log_attempt(
+                _round_no,
+                tool_choice=tool_choice,
+                finish_reason=("error" if _cloud_err else ("tool_calls" if _cloud_calls else "stop")),
+                content="".join(_cloud_texts),
+                tool_calls=_cloud_calls,
+                error=_cloud_err,
+            )
         yield {"type": "done"}
         return
 
@@ -399,33 +764,19 @@ async def stream_with_tools(
         clean_url = clean_url[: -len("/chat/completions")]
     client = AsyncOpenAI(base_url=clean_url, api_key=api_key, timeout=timeout)
 
-    openai_messages = [{"role": "system", "content": system}] + messages
+    openai_messages = [{"role": "system", "content": system}] + sanitize_anthropic_history(messages)
 
-    _DEBUG_DIR = Path(__file__).resolve().parents[2] / "debug_logs"
-    _debug_id = uuid.uuid4().hex[:8]
-    _debug_path = _DEBUG_DIR / f"llm_call_{_debug_id}.json"
-    _debug_payload: dict = {"model": model, "tool_choice": tool_choice}
-    _debug_msg_sizes: list = []
-    _debug_response_parts: list = []
-    _debug_tool_calls: list = []
-    if DEBUG_LOG_ENABLED:
-        _DEBUG_DIR.mkdir(exist_ok=True)
-        for _mi, _m in enumerate(openai_messages):
-            _c = _m.get("content", "")
-            _sz = len(_c) if isinstance(_c, str) else -1
-            _debug_msg_sizes.append({"index": _mi, "role": _m.get("role", ""), "size": _sz, "content": _c})
-        _debug_payload["messages"] = _debug_msg_sizes
-        _debug_payload["response"] = None
-        _debug_payload["total_messages"] = len(openai_messages)
-        _debug_payload["total_chars"] = sum(m.get("size", 0) for m in _debug_msg_sizes)
-        try:
-            _debug_path.write_text(json.dumps(_debug_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+    _round_no = -1
+    if debug_log is not None:
+        _round_no = debug_log.start_round(
+            model=model, messages=openai_messages, tools=tools, tool_choice=tool_choice,
+        )
+    _finish_state: dict = {"reason": None}
 
     async def _run_once(tool_choice_val: str):
         """执行一次流式工具调用，产出 text / tool_calls / done 事件。"""
         tool_call_acc: Dict[int, dict] = {}
+        _finish_state["reason"] = None
         try:
             stream = await client.chat.completions.create(
                 model=model,
@@ -447,6 +798,11 @@ async def stream_with_tools(
                 if delta.content:
                     yield {"type": "text", "content": delta.content}
 
+                # 思考模型经 OpenAI 兼容端点可能返回 reasoning_content / reasoning 字段
+                _reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                if _reasoning:
+                    yield {"type": "reasoning", "content": _reasoning}
+
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
                         idx = tc.index
@@ -464,7 +820,10 @@ async def stream_with_tools(
                             if tc.function.arguments:
                                 tool_call_acc[idx]["arguments"] += tc.function.arguments
 
-                if chunk.choices[0].finish_reason == "tool_calls":
+                _fr = chunk.choices[0].finish_reason
+                if _fr:
+                    _finish_state["reason"] = _fr
+                if _fr == "tool_calls":
                     break
         except Exception as e:
             yield {"type": "text", "content": f"\n\n[流式输出中断: {str(e)[:200]}]"}
@@ -489,62 +848,67 @@ async def stream_with_tools(
     attempts = ["required", "auto"] if tool_choice == "required" else [tool_choice]
     last_err: Optional[Exception] = None
 
-    def _flush_debug():
-        if not DEBUG_LOG_ENABLED:
-            return
-        _debug_payload["response"] = {
-            "text": "".join(_debug_response_parts),
-            "tool_calls": _debug_tool_calls,
-        }
-        try:
-            _debug_path.write_text(json.dumps(_debug_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
     for attempt in attempts:
         buffered_events: list = []
         has_tool_calls = False
         has_done = False
+        attempt_texts: list = []
+        attempt_calls: list = []
         try:
             async for event in _run_once(attempt):
                 buffered_events.append(event)
                 if event.get("type") == "tool_calls":
                     has_tool_calls = True
-                    if DEBUG_LOG_ENABLED:
-                        for _tc in event.get("calls", []):
-                            _debug_tool_calls.append({"id": _tc.get("id", ""), "name": _tc.get("name", ""), "arguments": _tc.get("arguments", {})})
+                    attempt_calls = event.get("calls", [])
                 if event.get("type") == "text":
-                    if DEBUG_LOG_ENABLED:
-                        _debug_response_parts.append(event.get("content", ""))
+                    attempt_texts.append(event.get("content", ""))
                 if event.get("type") == "done":
                     has_done = True
         except Exception as e:
             last_err = e
+            if debug_log is not None:
+                debug_log.log_attempt(
+                    _round_no, tool_choice=attempt, finish_reason="error",
+                    content="".join(attempt_texts), tool_calls=attempt_calls,
+                    error=str(e)[:500],
+                )
             if not buffered_events:
                 continue
             has_text = any(ev.get("type") == "text" for ev in buffered_events)
             if has_text:
                 for ev in buffered_events:
                     yield ev
-                _flush_debug()
                 return
             continue
+        else:
+            if debug_log is not None:
+                debug_log.log_attempt(
+                    _round_no, tool_choice=attempt,
+                    finish_reason=_finish_state["reason"],
+                    content="".join(attempt_texts),
+                    tool_calls=attempt_calls,
+                )
 
         for ev in buffered_events:
             yield ev
         if has_done:
-            _flush_debug()
             return
 
     if last_err:
         msg = str(last_err)
         if "tool" in msg.lower() or "function" in msg.lower() or "unspported" in msg.lower() or "not support" in msg.lower():
+            _fb_texts: list = []
             async for text in _stream_openai_compat(base_url, api_key, model, system, messages, max_tokens):
+                _fb_texts.append(text)
                 yield {"type": "text", "content": text}
             yield {"type": "done"}
-            _flush_debug()
+            if debug_log is not None:
+                debug_log.log_attempt(
+                    _round_no, tool_choice="auto（降级：不带 tools）",
+                    finish_reason="stop", content="".join(_fb_texts), tool_calls=[],
+                    error=f"工具调用不受支持，已降级为纯文本模式: {msg[:300]}",
+                )
             return
         yield {"type": "text", "content": f"\n\n[API 调用失败: {msg[:300]}]"}
         yield {"type": "done"}
-    _flush_debug()
     return

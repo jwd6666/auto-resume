@@ -20,6 +20,26 @@ export interface AuthStatus {
   cloud_server: string;
 }
 
+/** 额度用量：按功能来源的明细项（label 由后端映射，如 自动打招呼/简历对话） */
+export interface UsageSourceItem {
+  source: string;
+  label: string;
+  tokens: number;
+  requests: number;
+}
+
+export interface UsageStats {
+  day: string;
+  today_tokens: number;
+  today_requests: number;
+  month_tokens: number;
+  month_requests: number;
+  daily_quota: number;
+  remaining_today: number;
+  today_by_source: UsageSourceItem[];
+  month_by_source: UsageSourceItem[];
+}
+
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -52,4 +72,5 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ template_id: templateId }),
     }),
+  usage: () => http<UsageStats>('/api/auth/usage'),
 };

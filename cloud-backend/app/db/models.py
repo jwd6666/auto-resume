@@ -92,3 +92,24 @@ class UserUsage(Base):
     day: Mapped[str] = mapped_column(String(10), index=True)  # UTC 日期 "YYYY-MM-DD"
     tokens: Mapped[int] = mapped_column(Integer, default=0)
     requests: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class UserUsageSource(Base):
+    """每用户每日按功能来源（打招呼/对话/简历生成等）的用量明细。
+
+    仅用于客户端「额度用量」统计展示，不参与配额准入守卫；
+    记账节奏与 user_usage 一致：准入时预留、结束后按实际用量结转。
+    """
+
+    __tablename__ = "user_usage_source"
+    __table_args__ = (
+        UniqueConstraint("user_id", "day", "source", name="uq_user_usage_source"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, index=True)
+    day: Mapped[str] = mapped_column(String(10), index=True)  # UTC 日期 "YYYY-MM-DD"
+    # greeting 打招呼 / chat 简历对话 / copy AI话术 / interview 模拟面试 / resume 简历解析生成 / test 模型测试 / other
+    source: Mapped[str] = mapped_column(String(32), default="other")
+    tokens: Mapped[int] = mapped_column(Integer, default=0)
+    requests: Mapped[int] = mapped_column(Integer, default=0)

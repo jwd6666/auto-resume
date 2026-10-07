@@ -130,7 +130,7 @@ export function LoginPage({ initialStatus, banReason, onLoggedIn, onSkip }: Logi
         )}
         {!banned && onSkip && (
           <p className="text-center text-[10px] text-slate-600 mt-2">
-            跳过后可正常使用，官方模型与添加自定义模型需登录
+            跳过后可正常使用，自动打招呼、官方模型与添加自定义模型需登录
           </p>
         )}
       </div>

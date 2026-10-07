@@ -36,9 +36,9 @@ const STYLE_OPTIONS: StyleOption[] = [
   },
   {
     id: 'modern',
-    name: '现代简约',
-    desc: '全白背景 + 主题色竖条，简洁专业',
-    preview: { left: '3%', right: '97%', accent: '#2563eb' },
+    name: '极简单栏现代风',
+    desc: '黑白灰细横线分隔，无卡片无阴影',
+    preview: { left: '0%', right: '100%', accent: '#2563eb' },
   },
   {
     id: 'minimal',
@@ -51,6 +51,18 @@ const STYLE_OPTIONS: StyleOption[] = [
     name: '创意侧边栏',
     desc: '顶部色带 + 下双栏，活力创意',
     preview: { left: '40%', right: '60%', accent: '#2563eb' },
+  },
+  {
+    id: 'table',
+    name: '表格版式',
+    desc: 'table 布局，正式商务风格',
+    preview: { left: '0%', right: '100%', accent: '#2563eb' },
+  },
+  {
+    id: 'timeline',
+    name: '时间轴风格',
+    desc: '轴线节点串联经历，时间脉络清晰',
+    preview: { left: '0%', right: '100%', accent: '#2563eb' },
   },
 ];
 
@@ -171,12 +183,11 @@ export function RestyleResumeModal({ open, onClose, resume, job, onConfirm }: Pr
                         width: opt.preview.left === '0%' ? '0' : '28px',
                         height: '36px',
                         backgroundColor: opt.id === 'classic' ? '#4A5F7A' : opt.id === 'creative' ? accent : 'transparent',
-                        borderLeft: opt.id === 'modern' ? `3px solid ${accent}` : 'none',
                         borderRadius: '2px',
                       }}
                     />
                     <div
-                      className="rounded-sm flex-1"
+                      className="rounded-sm flex-1 overflow-hidden"
                       style={{
                         height: '36px',
                         backgroundColor: '#f8f8f8',
@@ -190,6 +201,43 @@ export function RestyleResumeModal({ open, onClose, resume, job, onConfirm }: Pr
                       )}
                       {opt.id === 'creative' && (
                         <div style={{ width: '100%', height: '12px', backgroundColor: accent, borderRadius: '2px 2px 0 0' }} />
+                      )}
+                      {opt.id === 'modern' && (
+                        <div className="w-full h-full flex flex-col items-center justify-center gap-[3px] px-[6px]">
+                          <div style={{ width: 16, height: 3, backgroundColor: '#334155', borderRadius: 1 }} />
+                          <div style={{ width: '80%', height: 1, backgroundColor: '#cbd5e1' }} />
+                          <div style={{ width: '55%', height: 1, backgroundColor: '#cbd5e1' }} />
+                          <div style={{ width: '90%', height: 1, backgroundColor: '#e2e8f0' }} />
+                          <div style={{ width: '70%', height: 1, backgroundColor: '#cbd5e1' }} />
+                        </div>
+                      )}
+                      {opt.id === 'table' && (
+                        <div className="w-full h-full flex flex-col gap-[1.5px] p-[3px]" style={{ backgroundColor: '#94a3b8' }}>
+                          <div style={{ height: 8, backgroundColor: '#1e293b' }} />
+                          <div className="flex gap-[1.5px]" style={{ height: 6 }}>
+                            <div className="flex-1" style={{ backgroundColor: '#fff' }} />
+                            <div className="flex-1" style={{ backgroundColor: '#fff' }} />
+                            <div className="flex-1" style={{ backgroundColor: '#fff' }} />
+                          </div>
+                          <div className="flex-1 flex flex-col gap-[1.5px]">
+                            <div className="flex-1" style={{ backgroundColor: '#fff' }} />
+                            <div className="flex-1" style={{ backgroundColor: '#fff' }} />
+                          </div>
+                        </div>
+                      )}
+                      {opt.id === 'timeline' && (
+                        <div className="w-full h-full flex flex-col px-[8px] py-[4px]">
+                          <div className="self-center" style={{ width: 14, height: 3, backgroundColor: '#334155', borderRadius: 1 }} />
+                          <div className="relative flex-1 mt-[4px]">
+                            <div className="absolute top-0 bottom-0" style={{ left: 3, width: 1.5, backgroundColor: '#94a3b8' }} />
+                            {[8, 45, 80].map(top => (
+                              <div key={top} className="absolute flex items-center gap-[4px]" style={{ top: `${top}%`, left: 0 }}>
+                                <div className="shrink-0 rounded-full" style={{ width: 6, height: 6, backgroundColor: accent }} />
+                                <div style={{ width: '62%', height: 1.5, backgroundColor: '#cbd5e1', borderRadius: 1 }} />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       )}
                     </div>
                   </div>

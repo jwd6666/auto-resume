@@ -52,4 +52,6 @@ from .provider_core import (
     complete_response_sync,
     sse_with_heartbeat,
     stream_with_tools,
+    sanitize_anthropic_history,
+    ConversationDebugLog,
 )

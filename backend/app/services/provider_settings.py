@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-DEBUG_LOG_ENABLED = False
+DEBUG_LOG_ENABLED = True
 
 # 本应用仅支持自定义模型，不再内置厂商。此处保留空字典以兼容既有 import 与返回结构。
 PROVIDERS: dict = {}

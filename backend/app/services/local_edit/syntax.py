@@ -24,6 +24,15 @@ _VOID_HTML_TAGS = {
     "link", "meta", "param", "source", "track", "wbr",
 }
 
+# 可省略闭合标签的元素：HTML 规范允许不写结束标签（浏览器会自动隐式闭合），
+# 校验时遇到它们不当作“未闭合”错误，避免大量误报。
+# 注意：span / i / b / div 等属于必须闭合元素，不在此列。
+_OPTIONAL_END_TAGS = {
+    "p", "li", "dd", "dt", "option", "optgroup", "thead", "tbody", "tfoot",
+    "tr", "td", "th", "rt", "rp", "colgroup", "caption",
+    "html", "head", "body",
+}
+
 
 def validate_syntax(path: str | Path, content: str) -> dict:
     p = Path(path)
@@ -105,32 +114,53 @@ def _validate_js_ts(content: str, lang: str) -> dict:
 
 
 def _validate_html(content: str) -> dict:
-    """使用 html.parser 检查 HTML 标签闭合与严重语法问题。"""
+    """基于标准库 html.parser 的标签平衡校验。
+
+    相较早期的严格栈逻辑，这里做了三点修正：
+    - 空元素（br/img/hr/input/meta/link ...）与自闭合标签不压栈；
+    - 属性值内的 '>'、<script>/<style> 原始文本由 html.parser 天然正确解析，不会误判；
+    - 闭合标签采用“容错匹配”：向上查找最近同名开标签，两者之间尚未闭合的元素只允许是
+    可隐式闭合的标签，否则报为交叉嵌套；并给出准确行号（不再恒为 None）。
+    """
     from html.parser import HTMLParser
 
     class TagChecker(HTMLParser):
         def __init__(self):
-            super().__init__()
-            self.errors: list[str] = []
-            self.stack: list[tuple[str, int]] = []
-            self._line_map: list[int] = []
+            super().__init__(convert_charrefs=True)
+            self.stack: list[tuple[str, int]] = []   # [(tag, line)]
+            self.errors: list[tuple[str, int]] = []  # [(message, line)]
 
         def handle_starttag(self, tag, attrs):
-            if tag.lower() not in _VOID_HTML_TAGS:
-                line_approx = self.getpos()[0] if self.getpos() else 0
-                self.stack.append((tag.lower(), line_approx))
+            t = tag.lower()
+            if t in _VOID_HTML_TAGS:
+                return
+            self.stack.append((t, self.getpos()[0]))
+
+        def handle_startendtag(self, tag, attrs):
+            # <x ... /> 自闭合：既不压栈也不弹出（覆盖默认的 start+end 行为，避免误配）
+            return
 
         def handle_endtag(self, tag):
-            tag = tag.lower()
-            if tag in _VOID_HTML_TAGS:
+            t = tag.lower()
+            if t in _VOID_HTML_TAGS:
                 return
-            if self.stack and self.stack[-1][0] == tag:
-                self.stack.pop()
-            elif self.stack:
-                open_tag, line = self.stack[-1]
-                self.errors.append(f"未匹配的闭合标签 </{tag}>，期望 </{open_tag}>（约第 {line} 行）")
-            else:
-                self.errors.append(f"未匹配的闭合标签 </{tag}>（无对应开标签）")
+            close_line = self.getpos()[0]
+            idx = None
+            for i in range(len(self.stack) - 1, -1, -1):
+                if self.stack[i][0] == t:
+                    idx = i
+                    break
+            if idx is None:
+                self.errors.append((f"多余的闭合标签 </{t}>（无对应开标签，约第 {close_line} 行）", close_line))
+                return
+            # idx 之上、尚未闭合的元素必须都是可隐式闭合的，否则为交叉嵌套/漏闭合
+            for j in range(len(self.stack) - 1, idx, -1):
+                etag, eline = self.stack[j]
+                if etag not in _OPTIONAL_END_TAGS:
+                    self.errors.append(
+                        (f"标签未正确闭合：<{etag}>（约第 {eline} 行）在 </{t}> 之前缺少 </{etag}>", eline)
+                    )
+            del self.stack[idx:]  # 弹出匹配元素及其上方隐式闭合的元素
 
         def handle_data(self, data):
             pass
@@ -138,25 +168,20 @@ def _validate_html(content: str) -> dict:
     try:
         checker = TagChecker()
         checker.feed(content)
+        checker.close()
+        # 文件结束时栈中仍存在的必须闭合元素 → 未闭合
+        for etag, eline in checker.stack:
+            if etag not in _OPTIONAL_END_TAGS:
+                checker.errors.append((f"未闭合标签 <{etag}>（约第 {eline} 行）", eline))
         if checker.errors:
-            first_error = checker.errors[0]
+            first_msg, first_line = checker.errors[0]
             return {
                 "ok": False,
                 "lang": "html",
                 "status": "error",
-                "message": f"HTML 标签不平衡: {first_error}",
-                "line": None,
-                "error": "; ".join(checker.errors[:3]),
-            }
-        if checker.stack:
-            unclosed = [f"<{tag}>（约第 {line} 行）" for tag, line in checker.stack[:5]]
-            return {
-                "ok": False,
-                "lang": "html",
-                "status": "error",
-                "message": f"HTML 存在未闭合标签: {', '.join(unclosed)}",
-                "line": checker.stack[0][1] if checker.stack else None,
-                "error": f"未闭合: {', '.join(unclosed)}",
+                "message": f"HTML 标签不平衡: {first_msg}",
+                "line": first_line,
+                "error": "; ".join(m for m, _ in checker.errors[:3]),
             }
         return {"ok": True, "lang": "html", "status": "ok", "message": "HTML 标签闭合校验通过", "line": None, "error": None}
     except Exception as e:

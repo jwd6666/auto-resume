@@ -6,7 +6,7 @@
 - 已登录：全部放行
 - 被封禁：除白名单外全部拦截（HTTP 403 / WebSocket 1008）
 - 未登录（跳过登录直接使用）：业务功能全部放行，
-  仅拦截需要登录的功能（云端模型、自定义模型管理）
+  仅拦截需要登录的功能（云端模型、自定义模型管理、自动打招呼任务）
 """
 from __future__ import annotations
 
@@ -25,10 +25,12 @@ LOGIN_REQUIRED_EXACT = (
     "/api/auth/cloud-models",
     "/api/auth/cloud-activate",
     "/api/auth/change-password",
+    "/api/auth/usage",
 )
 LOGIN_REQUIRED_PREFIXES = (
     "/agent/settings/custom-models",
     "/agent/settings/test-custom-model",
+    "/api/tasks",  # 自动打招呼任务（含 WS /api/tasks/ws/*）需登录
 )
 
 
