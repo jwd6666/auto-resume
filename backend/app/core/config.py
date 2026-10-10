@@ -16,6 +16,8 @@ PROFILES_DIR = DATA_DIR / "profiles"
 LOGS_DIR = DATA_DIR / "logs"
 WORKSPACE_DIR = DATA_DIR / "workspace"
 RESUME_STORE_DIR = DATA_DIR / "resume_store"
+AVATARS_DIR = DATA_DIR / "avatars"
+GREET_IMAGES_DIR = DATA_DIR / "greet_images"
 DB_PATH = DATA_DIR / "auto_resume.sqlite"
 RESUME_DB_PATH = DATA_DIR / "resume_agent.db"
 
@@ -24,12 +26,15 @@ PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 RESUME_STORE_DIR.mkdir(parents=True, exist_ok=True)
+AVATARS_DIR.mkdir(parents=True, exist_ok=True)
+GREET_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_INTERVAL_SECONDS = 5
 DEFAULT_DAILY_LIMIT = 10
 DEFAULT_CLICK_DELAY_SECONDS = 5  # 点开左侧岗位 → 等多久 → 点右侧「立即沟通」
 BOSS_HOME = "https://www.zhipin.com/"
 BOSS_SEARCH_URL = "https://www.zhipin.com/web/geek/job"
+BOSS_CHAT_URL = "https://www.zhipin.com/web/geek/chat"
 
 # 云端管控服务器地址：开发环境 → 本地；生产环境（Electron 打包注入） → 云端
 # 环境变量优先，未设置时根据是否由 sidecar 注入 API_TOKEN 判断环境

@@ -17,6 +17,7 @@ from .provider_settings import (
     _get_context_output, is_cloud_provider, get_cloud_template_id,
 )
 from .provider_openai import _stream_openai_compat, stream_cloud_chat
+from .ai_call_log import ai_call_logger
 from ..core.json_utils import repair_json_args
 from ..core.config import CLOUD_SERVER_URL
 
@@ -359,6 +360,20 @@ class ConversationDebugLog:
         self._bar("═")
 
 
+def _resolve_model_info_for_log() -> tuple:
+    settings = load_settings()
+    provider = settings.get("provider", "")
+    model = settings.get("model", "")
+    if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
+        cm = get_custom_model(provider, settings)
+        if cm:
+            model = cm.get("model_id", "") or model
+    elif provider == CUSTOM_PROVIDER_KEY or not provider:
+        custom_cfg = settings.get("custom", {})
+        model = custom_cfg.get("model", "") or model
+    return provider, model
+
+
 async def test_connection(
     provider: str,
     model: str,
@@ -436,58 +451,85 @@ async def stream_response(
     source: str = "resume",
 ) -> AsyncGenerator[str, None]:
     """流式调用当前配置的模型。source 为额度用量明细的功能来源。"""
+    log_provider, log_model = _resolve_model_info_for_log()
+    prompt_chars = len(system) + sum(len(m.get("content", "")) if isinstance(m.get("content"), str) else 0 for m in messages)
+    call_id = ai_call_logger.begin(source=source, provider=log_provider, model=log_model, prompt_chars=prompt_chars, request_summary=system[:200])
+    response_parts: list[str] = []
+    call_error = None
     settings = load_settings()
     provider = settings.get("provider", "")
     model = settings.get("model", "")
 
-    if is_cloud_provider(provider):
-        template_id = get_cloud_template_id(provider)
-        if template_id is None:
-            yield "⚠️ 云端模型配置异常，请重新选择。"
+    try:
+        if is_cloud_provider(provider):
+            template_id = get_cloud_template_id(provider)
+            if template_id is None:
+                call_error = "云端模型配置异常"
+                yield "⚠️ 云端模型配置异常，请重新选择。"
+                return
+            from ..core.cloud_auth import cloud_auth
+            token = cloud_auth.current_token()
+            if not token:
+                call_error = "未登录"
+                yield "⚠️ 未登录，请先登录后再使用官方模型。"
+                return
+            openai_messages = [{"role": "system", "content": system}] + messages
+            async for ev in stream_cloud_chat(token, template_id, openai_messages, source=source):
+                if ev["type"] == "text":
+                    response_parts.append(ev["content"])
+                    yield ev["content"]
+                elif ev["type"] == "error":
+                    call_error = ev["content"]
+                    raise RuntimeError(ev["content"])
             return
-        from ..core.cloud_auth import cloud_auth
-        token = cloud_auth.current_token()
-        if not token:
-            yield "⚠️ 未登录，请先登录后再使用官方模型。"
+
+        api_key = get_api_key(provider, settings)
+
+        if not api_key:
+            call_error = "未配置 API Key"
+            yield "⚠️ 未配置当前所选模型的 API Key，请在「模型管理」中填写。"
             return
-        openai_messages = [{"role": "system", "content": system}] + messages
-        async for ev in stream_cloud_chat(token, template_id, openai_messages, source=source):
-            if ev["type"] == "text":
-                yield ev["content"]
-            elif ev["type"] == "error":
-                raise RuntimeError(ev["content"])
-        return
 
-    api_key = get_api_key(provider, settings)
-
-    if not api_key:
-        yield "⚠️ 未配置当前所选模型的 API Key，请在「模型管理」中填写。"
-        return
-
-    if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
-        cm = get_custom_model(provider, settings)
-        if not cm:
-            yield f"⚠️ 找不到自定义模型: {provider}"
+        if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
+            cm = get_custom_model(provider, settings)
+            if not cm:
+                call_error = f"找不到自定义模型: {provider}"
+                yield f"⚠️ 找不到自定义模型: {provider}"
+                return
+            base_url = _resolve_base_url(cm)
+            if not base_url:
+                call_error = "未配置 Base URL"
+                yield "⚠️ 自定义模型未配置 Base URL，请在「模型管理」中填写。"
+                return
+            custom_model = cm.get("model_id", "") or model
+            ctx_out = int(cm.get("context_output") or 8192)
+            async for text in _stream_openai_compat(base_url, api_key, custom_model, system, messages, max_tokens=ctx_out):
+                response_parts.append(text)
+                yield text
             return
-        base_url = _resolve_base_url(cm)
+
+        # CUSTOM_PROVIDER_KEY 或未配置情况：一律按自定义的 OpenAI 兼容模型处理
+        custom_cfg = settings.get("custom", {})
+        base_url = custom_cfg.get("base_url", "")
         if not base_url:
+            call_error = "未配置 Base URL"
             yield "⚠️ 自定义模型未配置 Base URL，请在「模型管理」中填写。"
             return
-        custom_model = cm.get("model_id", "") or model
-        ctx_out = int(cm.get("context_output") or 8192)
-        async for text in _stream_openai_compat(base_url, api_key, custom_model, system, messages, max_tokens=ctx_out):
+        custom_model = custom_cfg.get("model", "") or model
+        async for text in _stream_openai_compat(base_url, api_key, custom_model, system, messages):
+            response_parts.append(text)
             yield text
-        return
-
-    # CUSTOM_PROVIDER_KEY 或未配置情况：一律按自定义的 OpenAI 兼容模型处理
-    custom_cfg = settings.get("custom", {})
-    base_url = custom_cfg.get("base_url", "")
-    if not base_url:
-        yield "⚠️ 自定义模型未配置 Base URL，请在「模型管理」中填写。"
-        return
-    custom_model = custom_cfg.get("model", "") or model
-    async for text in _stream_openai_compat(base_url, api_key, custom_model, system, messages):
-        yield text
+    except Exception as exc:
+        call_error = str(exc)[:500]
+        raise
+    finally:
+        resp_text = "".join(response_parts)
+        ai_call_logger.finish(
+            call_id,
+            response_chars=len(resp_text),
+            response_summary=resp_text[:500] if resp_text else None,
+            error=call_error,
+        )
 
 
 async def complete_response(system: str, messages: list, source: str = "resume") -> str:
@@ -499,120 +541,167 @@ async def complete_response(system: str, messages: list, source: str = "resume")
 
 async def complete_response_with_provider(provider: str, model: str, system: str, messages: list, max_tokens: int = 300, source: str = "greeting") -> str:
     """使用指定 provider+model 调用模型，返回完整文本。用于 AI 招呼语等非全局配置场景。"""
-    if is_cloud_provider(provider):
-        template_id = get_cloud_template_id(provider)
-        if template_id is None:
-            raise RuntimeError("云端模型配置异常")
-        from ..core.cloud_auth import cloud_auth
-        token = cloud_auth.current_token()
-        if not token:
-            raise RuntimeError("未登录，无法使用官方模型")
-        openai_messages = [{"role": "system", "content": system}] + messages
-        parts: list[str] = []
-        async for ev in stream_cloud_chat(token, template_id, openai_messages, max_tokens=max_tokens, source=source):
-            if ev["type"] == "text":
-                parts.append(ev["content"])
-            elif ev["type"] == "error":
-                raise RuntimeError(ev["content"])
-        return "".join(parts)
-
-    settings = load_settings()
-    api_key = get_api_key(provider, settings)
-    if not api_key:
-        raise RuntimeError(f"未配置 {provider} 的 API Key，请在「模型管理」中填写")
-
-    if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
-        cm = get_custom_model(provider, settings)
-        if not cm:
-            raise RuntimeError(f"找不到自定义模型: {provider}")
-        base_url = _resolve_base_url(cm)
-        if not base_url:
-            raise RuntimeError("自定义模型未配置 Base URL")
-        use_model = cm.get("model_id", "") or model
-        parts: list[str] = []
-        async for text in _stream_openai_compat(base_url, api_key, use_model, system, messages, max_tokens=max_tokens):
-            parts.append(text)
-        return "".join(parts)
-
-    if provider == CUSTOM_PROVIDER_KEY:
-        custom_cfg = settings.get("custom", {})
-        base_url = custom_cfg.get("base_url", "")
-        if not base_url:
-            raise RuntimeError("自定义模型未配置 Base URL")
-        use_model = custom_cfg.get("model", "") or model
-        parts: list[str] = []
-        async for text in _stream_openai_compat(base_url, api_key, use_model, system, messages, max_tokens=max_tokens):
-            parts.append(text)
-        return "".join(parts)
-
-    raise RuntimeError(f"不支持的 Provider: {provider}（本应用仅支持自定义模型）")
-
-
-def complete_response_sync(system: str, messages: list, *, max_tokens: int = 8192, timeout: float = 600.0, source: str = "resume") -> str:
-    """同步调用当前模型管理配置的模型，返回完整文本。供 resume_parser 等同步场景使用。"""
-    settings = load_settings()
-    provider = settings.get("provider", "")
-
-    if is_cloud_provider(provider):
-        template_id = get_cloud_template_id(provider)
-        if template_id is None:
-            raise RuntimeError("云端模型配置异常")
-        from ..core.cloud_auth import cloud_auth
-        token = cloud_auth.current_token()
-        if not token:
-            raise RuntimeError("未登录，无法使用官方模型")
-        openai_messages = [{"role": "system", "content": system}] + messages
-
-        async def _do_cloud():
+    prompt_chars = len(system) + sum(len(m.get("content", "")) if isinstance(m.get("content"), str) else 0 for m in messages)
+    call_id = ai_call_logger.begin(source=source, provider=provider, model=model, prompt_chars=prompt_chars, request_summary=system[:200])
+    call_error = None
+    try:
+        if is_cloud_provider(provider):
+            template_id = get_cloud_template_id(provider)
+            if template_id is None:
+                call_error = "云端模型配置异常"
+                raise RuntimeError("云端模型配置异常")
+            from ..core.cloud_auth import cloud_auth
+            token = cloud_auth.current_token()
+            if not token:
+                call_error = "未登录"
+                raise RuntimeError("未登录，无法使用官方模型")
+            openai_messages = [{"role": "system", "content": system}] + messages
             parts: list[str] = []
             async for ev in stream_cloud_chat(token, template_id, openai_messages, max_tokens=max_tokens, source=source):
                 if ev["type"] == "text":
                     parts.append(ev["content"])
                 elif ev["type"] == "error":
+                    call_error = ev["content"]
                     raise RuntimeError(ev["content"])
-            return "".join(parts)
+            result = "".join(parts)
+            ai_call_logger.finish(call_id, response_chars=len(result), response_summary=result[:500])
+            return result
 
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            # 无运行中的事件循环（纯同步/工作线程上下文）：直接新建循环执行
-            return asyncio.run(_do_cloud())
-        # 事件循环线程内被同步调用：提交到线程池用独立事件循环执行并阻塞等待。
-        # 必须用 pool.submit（concurrent Future 可阻塞等待）；不能用 loop.run_in_executor，
-        # 它返回 asyncio Future，pending 时 .result() 会抛 InvalidStateError
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(lambda: asyncio.run(_do_cloud())).result()
+        settings = load_settings()
+        api_key = get_api_key(provider, settings)
+        if not api_key:
+            call_error = f"未配置 {provider} 的 API Key"
+            raise RuntimeError(f"未配置 {provider} 的 API Key，请在「模型管理」中填写")
 
-    base_url, api_key, model_id, provider_type = _resolve_current_provider(settings)
-    ctx_out = _get_context_output(settings)
-    max_tokens = min(max_tokens, ctx_out)
+        if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
+            cm = get_custom_model(provider, settings)
+            if not cm:
+                call_error = f"找不到自定义模型: {provider}"
+                raise RuntimeError(f"找不到自定义模型: {provider}")
+            base_url = _resolve_base_url(cm)
+            if not base_url:
+                call_error = "未配置 Base URL"
+                raise RuntimeError("自定义模型未配置 Base URL")
+            use_model = cm.get("model_id", "") or model
+            parts: list[str] = []
+            async for text in _stream_openai_compat(base_url, api_key, use_model, system, messages, max_tokens=max_tokens):
+                parts.append(text)
+            result = "".join(parts)
+            ai_call_logger.finish(call_id, response_chars=len(result), response_summary=result[:500])
+            return result
 
-    if not api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="未配置当前所选模型的 API Key，请在「模型管理」中填写。",
+        if provider == CUSTOM_PROVIDER_KEY:
+            custom_cfg = settings.get("custom", {})
+            base_url = custom_cfg.get("base_url", "")
+            if not base_url:
+                call_error = "未配置 Base URL"
+                raise RuntimeError("自定义模型未配置 Base URL")
+            use_model = custom_cfg.get("model", "") or model
+            parts: list[str] = []
+            async for text in _stream_openai_compat(base_url, api_key, use_model, system, messages, max_tokens=max_tokens):
+                parts.append(text)
+            result = "".join(parts)
+            ai_call_logger.finish(call_id, response_chars=len(result), response_summary=result[:500])
+            return result
+
+        call_error = f"不支持的 Provider: {provider}"
+        raise RuntimeError(f"不支持的 Provider: {provider}（本应用仅支持自定义模型）")
+    except Exception as exc:
+        if not call_error:
+            call_error = str(exc)[:500]
+        ai_call_logger.finish(call_id, error=call_error)
+        raise
+
+
+def complete_response_sync(system: str, messages: list, *, max_tokens: int = 8192, timeout: float = 600.0, source: str = "resume") -> str:
+    """同步调用当前模型管理配置的模型，返回完整文本。供 resume_parser 等同步场景使用。"""
+    provider, model = _resolve_model_info_for_log()
+    prompt_chars = len(system) + sum(len(m.get("content", "")) if isinstance(m.get("content"), str) else 0 for m in messages)
+    call_id = ai_call_logger.begin(source=source, provider=provider, model=model, prompt_chars=prompt_chars, request_summary=system[:200])
+    call_error = None
+    try:
+        settings = load_settings()
+        provider = settings.get("provider", "")
+
+        if is_cloud_provider(provider):
+            template_id = get_cloud_template_id(provider)
+            if template_id is None:
+                call_error = "云端模型配置异常"
+                raise RuntimeError("云端模型配置异常")
+            from ..core.cloud_auth import cloud_auth
+            token = cloud_auth.current_token()
+            if not token:
+                call_error = "未登录"
+                raise RuntimeError("未登录，无法使用官方模型")
+            openai_messages = [{"role": "system", "content": system}] + messages
+
+            async def _do_cloud():
+                parts: list[str] = []
+                async for ev in stream_cloud_chat(token, template_id, openai_messages, max_tokens=max_tokens, source=source):
+                    if ev["type"] == "text":
+                        parts.append(ev["content"])
+                    elif ev["type"] == "error":
+                        raise RuntimeError(ev["content"])
+                return "".join(parts)
+
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                result = asyncio.run(_do_cloud())
+            else:
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    result = pool.submit(lambda: asyncio.run(_do_cloud())).result()
+            ai_call_logger.finish(call_id, response_chars=len(result), response_summary=result[:500])
+            return result
+
+        base_url, api_key, model_id, provider_type = _resolve_current_provider(settings)
+        ctx_out = _get_context_output(settings)
+        max_tokens = min(max_tokens, ctx_out)
+
+        if not api_key:
+            call_error = "未配置 API Key"
+            raise HTTPException(
+                status_code=400,
+                detail="未配置当前所选模型的 API Key，请在「模型管理」中填写。",
+            )
+
+        if AsyncOpenAI is None:
+            call_error = "openai 库未安装"
+            raise RuntimeError("openai 库未安装，请 pip install openai")
+        if not base_url:
+            call_error = "未配置 Base URL"
+            raise HTTPException(
+                status_code=400,
+                detail="当前模型未配置 Base URL，请在「模型管理」中填写。",
+            )
+        clean_url = base_url.rstrip("/")
+        if clean_url.endswith("/chat/completions"):
+            clean_url = clean_url[: -len("/chat/completions")]
+        client = OpenAI(base_url=clean_url, api_key=api_key, timeout=timeout)
+        openai_messages = [{"role": "system", "content": system}] + messages
+        resp = client.chat.completions.create(
+            model=model_id,
+            messages=openai_messages,
+            stream=False,
+            max_tokens=max_tokens,
         )
-
-    if AsyncOpenAI is None:
-        raise RuntimeError("openai 库未安装，请 pip install openai")
-    if not base_url:
-        raise HTTPException(
-            status_code=400,
-            detail="当前模型未配置 Base URL，请在「模型管理」中填写。",
+        result = (resp.choices[0].message.content or "").strip()
+        usage = getattr(resp, "usage", None)
+        ai_call_logger.finish(
+            call_id,
+            response_chars=len(result),
+            prompt_tokens=usage.prompt_tokens if usage else None,
+            completion_tokens=usage.completion_tokens if usage else None,
+            total_tokens=usage.total_tokens if usage else None,
+            response_summary=result[:500],
         )
-    clean_url = base_url.rstrip("/")
-    if clean_url.endswith("/chat/completions"):
-        clean_url = clean_url[: -len("/chat/completions")]
-    client = OpenAI(base_url=clean_url, api_key=api_key, timeout=timeout)
-    openai_messages = [{"role": "system", "content": system}] + messages
-    resp = client.chat.completions.create(
-        model=model_id,
-        messages=openai_messages,
-        stream=False,
-        max_tokens=max_tokens,
-    )
-    return (resp.choices[0].message.content or "").strip()
+        return result
+    except Exception as exc:
+        if not call_error:
+            call_error = str(exc)[:500]
+        ai_call_logger.finish(call_id, error=call_error)
+        raise
 
 
 async def sse_with_heartbeat(sse_gen: AsyncGenerator[str, None], interval: float = 10.0) -> AsyncGenerator[str, None]:
@@ -673,242 +762,273 @@ async def stream_with_tools(
     追加到该对话的 debug 日志文件中（一次对话一个文件）。
     source: 功能来源（额度用量明细），默认 chat（简历 Agent 对话）。
     """
-    settings = load_settings()
-    provider = settings.get("provider", "")
-    model = settings.get("model", "")
+    log_provider, log_model = _resolve_model_info_for_log()
+    prompt_chars = len(system) + sum(len(m.get("content", "")) if isinstance(m.get("content"), str) else 0 for m in messages)
+    call_id = ai_call_logger.begin(source=source, provider=log_provider, model=log_model, prompt_chars=prompt_chars, request_summary=system[:200])
+    all_response_text: list[str] = []
+    call_error = None
 
-    if is_cloud_provider(provider):
-        template_id = get_cloud_template_id(provider)
-        if template_id is None:
-            yield {"type": "text", "content": "⚠️ 云端模型配置异常，请重新选择。"}
+    try:
+        settings = load_settings()
+        provider = settings.get("provider", "")
+        model = settings.get("model", "")
+
+        if is_cloud_provider(provider):
+            template_id = get_cloud_template_id(provider)
+            if template_id is None:
+                call_error = "云端模型配置异常"
+                yield {"type": "text", "content": "⚠️ 云端模型配置异常，请重新选择。"}
+                yield {"type": "done"}
+                return
+            from ..core.cloud_auth import cloud_auth
+            token = cloud_auth.current_token()
+            if not token:
+                call_error = "未登录"
+                yield {"type": "text", "content": "⚠️ 未登录，请先登录后再使用官方模型。"}
+                yield {"type": "done"}
+                return
+            openai_messages = [{"role": "system", "content": system}] + sanitize_anthropic_history(messages)
+            _round_no = -1
+            if debug_log is not None:
+                _round_no = debug_log.start_round(
+                    model=f"cloud:{template_id}",
+                    messages=openai_messages, tools=tools, tool_choice=tool_choice,
+                )
+            _cloud_texts: list = []
+            _cloud_calls: list = []
+            _cloud_err: Optional[str] = None
+            try:
+                async for ev in stream_cloud_chat(token, template_id, openai_messages, max_tokens=max_tokens, tools=tools, tool_choice=tool_choice, source=source):
+                    if ev["type"] == "error":
+                        _cloud_err = ev["content"]
+                        all_response_text.append(ev["content"])
+                        yield {"type": "text", "content": ev["content"]}
+                    else:
+                        if ev.get("type") == "text":
+                            _cloud_texts.append(ev.get("content", ""))
+                            all_response_text.append(ev.get("content", ""))
+                        elif ev.get("type") == "tool_calls":
+                            _cloud_calls = ev.get("calls", [])
+                        yield ev
+            except Exception as e:
+                _cloud_err = str(e)[:300]
+                call_error = _cloud_err
+                yield {"type": "text", "content": f"\n\n[云端调用失败: {str(e)[:200]}]"}
+            if debug_log is not None:
+                debug_log.log_attempt(
+                    _round_no,
+                    tool_choice=tool_choice,
+                    finish_reason=("error" if _cloud_err else ("tool_calls" if _cloud_calls else "stop")),
+                    content="".join(_cloud_texts),
+                    tool_calls=_cloud_calls,
+                    error=_cloud_err,
+                )
+            if _cloud_err:
+                call_error = _cloud_err
             yield {"type": "done"}
             return
-        from ..core.cloud_auth import cloud_auth
-        token = cloud_auth.current_token()
-        if not token:
-            yield {"type": "text", "content": "⚠️ 未登录，请先登录后再使用官方模型。"}
+
+        api_key = get_api_key(provider, settings)
+
+        if not api_key:
+            call_error = "未配置 API Key"
+            yield {"type": "text", "content": "⚠️ 未配置当前所选模型的 API Key，请在「模型管理」中填写。"}
             yield {"type": "done"}
             return
+
+        base_url: Optional[str] = None
+        if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
+            cm = get_custom_model(provider, settings)
+            if not cm:
+                call_error = f"找不到自定义模型: {provider}"
+                yield {"type": "text", "content": f"⚠️ 找不到自定义模型: {provider}"}
+                yield {"type": "done"}
+                return
+            base_url = _resolve_base_url(cm)
+            if not base_url:
+                call_error = "未配置 Base URL"
+                yield {"type": "text", "content": "⚠️ 自定义模型未配置 Base URL"}
+                yield {"type": "done"}
+                return
+            model = cm.get("model_id", "") or model
+        else:
+            # CUSTOM_PROVIDER_KEY 或未配置情况：一律按自定义的 OpenAI 兼容模型处理
+            base_url = settings.get("custom", {}).get("base_url", "")
+            if not base_url:
+                call_error = "未配置 Base URL"
+                yield {"type": "text", "content": "⚠️ 自定义模型未配置 Base URL"}
+                yield {"type": "done"}
+                return
+            model = settings.get("custom", {}).get("model", "") or model
+
+        if AsyncOpenAI is None:
+            call_error = "openai 库未安装"
+            yield {"type": "text", "content": "⚠️ openai 库未安装"}
+            yield {"type": "done"}
+            return
+
+        clean_url = base_url.rstrip("/")
+        if clean_url.endswith("/chat/completions"):
+            clean_url = clean_url[: -len("/chat/completions")]
+        client = AsyncOpenAI(base_url=clean_url, api_key=api_key, timeout=timeout)
+
         openai_messages = [{"role": "system", "content": system}] + sanitize_anthropic_history(messages)
+
         _round_no = -1
         if debug_log is not None:
             _round_no = debug_log.start_round(
-                model=f"cloud:{template_id}",
-                messages=openai_messages, tools=tools, tool_choice=tool_choice,
+                model=model, messages=openai_messages, tools=tools, tool_choice=tool_choice,
             )
-        _cloud_texts: list = []
-        _cloud_calls: list = []
-        _cloud_err: Optional[str] = None
-        try:
-            async for ev in stream_cloud_chat(token, template_id, openai_messages, max_tokens=max_tokens, tools=tools, tool_choice=tool_choice, source=source):
-                if ev["type"] == "error":
-                    _cloud_err = ev["content"]
-                    yield {"type": "text", "content": ev["content"]}
-                else:
-                    if ev.get("type") == "text":
-                        _cloud_texts.append(ev.get("content", ""))
-                    elif ev.get("type") == "tool_calls":
-                        _cloud_calls = ev.get("calls", [])
-                    yield ev
-        except Exception as e:
-            _cloud_err = str(e)[:300]
-            yield {"type": "text", "content": f"\n\n[云端调用失败: {str(e)[:200]}]"}
-        if debug_log is not None:
-            debug_log.log_attempt(
-                _round_no,
-                tool_choice=tool_choice,
-                finish_reason=("error" if _cloud_err else ("tool_calls" if _cloud_calls else "stop")),
-                content="".join(_cloud_texts),
-                tool_calls=_cloud_calls,
-                error=_cloud_err,
-            )
-        yield {"type": "done"}
-        return
+        _finish_state: dict = {"reason": None}
 
-    api_key = get_api_key(provider, settings)
+        async def _run_once(tool_choice_val: str):
+            """执行一次流式工具调用，产出 text / tool_calls / done 事件。"""
+            tool_call_acc: Dict[int, dict] = {}
+            _finish_state["reason"] = None
+            try:
+                stream = await client.chat.completions.create(
+                    model=model,
+                    messages=openai_messages,
+                    stream=True,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    tool_choice=tool_choice_val,
+                )
+            except Exception:
+                raise
 
-    if not api_key:
-        yield {"type": "text", "content": "⚠️ 未配置当前所选模型的 API Key，请在「模型管理」中填写。"}
-        yield {"type": "done"}
-        return
+            try:
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
 
-    base_url: Optional[str] = None
-    if provider.startswith(f"{CUSTOM_PROVIDER_KEY}:"):
-        cm = get_custom_model(provider, settings)
-        if not cm:
-            yield {"type": "text", "content": f"⚠️ 找不到自定义模型: {provider}"}
+                    if delta.content:
+                        yield {"type": "text", "content": delta.content}
+
+                    # 思考模型经 OpenAI 兼容端点可能返回 reasoning_content / reasoning 字段
+                    _reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                    if _reasoning:
+                        yield {"type": "reasoning", "content": _reasoning}
+
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            idx = tc.index
+                            if idx not in tool_call_acc:
+                                tool_call_acc[idx] = {
+                                    "id": tc.id or "",
+                                    "name": "",
+                                    "arguments": "",
+                                }
+                            if tc.id:
+                                tool_call_acc[idx]["id"] = tc.id
+                            if tc.function:
+                                if tc.function.name:
+                                    tool_call_acc[idx]["name"] += tc.function.name
+                                if tc.function.arguments:
+                                    tool_call_acc[idx]["arguments"] += tc.function.arguments
+
+                    _fr = chunk.choices[0].finish_reason
+                    if _fr:
+                        _finish_state["reason"] = _fr
+                    if _fr == "tool_calls":
+                        break
+            except Exception as e:
+                yield {"type": "text", "content": f"\n\n[流式输出中断: {str(e)[:200]}]"}
+
+            if tool_call_acc:
+                calls = []
+                for idx in sorted(tool_call_acc.keys()):
+                    tc = tool_call_acc[idx]
+                    raw_args = tc["arguments"]
+                    if raw_args:
+                        try:
+                            args = json.loads(raw_args)
+                        except json.JSONDecodeError:
+                            args = repair_json_args(raw_args)
+                    else:
+                        args = {}
+                    calls.append({"id": tc["id"], "name": tc["name"], "arguments": args, "raw_arguments": raw_args})
+                yield {"type": "tool_calls", "calls": calls}
+
             yield {"type": "done"}
-            return
-        base_url = _resolve_base_url(cm)
-        if not base_url:
-            yield {"type": "text", "content": "⚠️ 自定义模型未配置 Base URL"}
-            yield {"type": "done"}
-            return
-        model = cm.get("model_id", "") or model
-    else:
-        # CUSTOM_PROVIDER_KEY 或未配置情况：一律按自定义的 OpenAI 兼容模型处理
-        base_url = settings.get("custom", {}).get("base_url", "")
-        if not base_url:
-            yield {"type": "text", "content": "⚠️ 自定义模型未配置 Base URL"}
-            yield {"type": "done"}
-            return
-        model = settings.get("custom", {}).get("model", "") or model
 
-    if AsyncOpenAI is None:
-        yield {"type": "text", "content": "⚠️ openai 库未安装"}
-        yield {"type": "done"}
-        return
+        attempts = ["required", "auto"] if tool_choice == "required" else [tool_choice]
+        last_err: Optional[Exception] = None
 
-    clean_url = base_url.rstrip("/")
-    if clean_url.endswith("/chat/completions"):
-        clean_url = clean_url[: -len("/chat/completions")]
-    client = AsyncOpenAI(base_url=clean_url, api_key=api_key, timeout=timeout)
-
-    openai_messages = [{"role": "system", "content": system}] + sanitize_anthropic_history(messages)
-
-    _round_no = -1
-    if debug_log is not None:
-        _round_no = debug_log.start_round(
-            model=model, messages=openai_messages, tools=tools, tool_choice=tool_choice,
-        )
-    _finish_state: dict = {"reason": None}
-
-    async def _run_once(tool_choice_val: str):
-        """执行一次流式工具调用，产出 text / tool_calls / done 事件。"""
-        tool_call_acc: Dict[int, dict] = {}
-        _finish_state["reason"] = None
-        try:
-            stream = await client.chat.completions.create(
-                model=model,
-                messages=openai_messages,
-                stream=True,
-                max_tokens=max_tokens,
-                tools=tools,
-                tool_choice=tool_choice_val,
-            )
-        except Exception:
-            raise
-
-        try:
-            async for chunk in stream:
-                if not chunk.choices:
+        for attempt in attempts:
+            buffered_events: list = []
+            has_tool_calls = False
+            has_done = False
+            attempt_texts: list = []
+            attempt_calls: list = []
+            try:
+                async for event in _run_once(attempt):
+                    buffered_events.append(event)
+                    if event.get("type") == "tool_calls":
+                        has_tool_calls = True
+                        attempt_calls = event.get("calls", [])
+                    if event.get("type") == "text":
+                        attempt_texts.append(event.get("content", ""))
+                        all_response_text.append(event.get("content", ""))
+                    if event.get("type") == "done":
+                        has_done = True
+            except Exception as e:
+                last_err = e
+                call_error = str(e)[:500]
+                if debug_log is not None:
+                    debug_log.log_attempt(
+                        _round_no, tool_choice=attempt, finish_reason="error",
+                        content="".join(attempt_texts), tool_calls=attempt_calls,
+                        error=str(e)[:500],
+                    )
+                if not buffered_events:
                     continue
-                delta = chunk.choices[0].delta
-
-                if delta.content:
-                    yield {"type": "text", "content": delta.content}
-
-                # 思考模型经 OpenAI 兼容端点可能返回 reasoning_content / reasoning 字段
-                _reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-                if _reasoning:
-                    yield {"type": "reasoning", "content": _reasoning}
-
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        idx = tc.index
-                        if idx not in tool_call_acc:
-                            tool_call_acc[idx] = {
-                                "id": tc.id or "",
-                                "name": "",
-                                "arguments": "",
-                            }
-                        if tc.id:
-                            tool_call_acc[idx]["id"] = tc.id
-                        if tc.function:
-                            if tc.function.name:
-                                tool_call_acc[idx]["name"] += tc.function.name
-                            if tc.function.arguments:
-                                tool_call_acc[idx]["arguments"] += tc.function.arguments
-
-                _fr = chunk.choices[0].finish_reason
-                if _fr:
-                    _finish_state["reason"] = _fr
-                if _fr == "tool_calls":
-                    break
-        except Exception as e:
-            yield {"type": "text", "content": f"\n\n[流式输出中断: {str(e)[:200]}]"}
-
-        if tool_call_acc:
-            calls = []
-            for idx in sorted(tool_call_acc.keys()):
-                tc = tool_call_acc[idx]
-                raw_args = tc["arguments"]
-                if raw_args:
-                    try:
-                        args = json.loads(raw_args)
-                    except json.JSONDecodeError:
-                        args = repair_json_args(raw_args)
-                else:
-                    args = {}
-                calls.append({"id": tc["id"], "name": tc["name"], "arguments": args, "raw_arguments": raw_args})
-            yield {"type": "tool_calls", "calls": calls}
-
-        yield {"type": "done"}
-
-    attempts = ["required", "auto"] if tool_choice == "required" else [tool_choice]
-    last_err: Optional[Exception] = None
-
-    for attempt in attempts:
-        buffered_events: list = []
-        has_tool_calls = False
-        has_done = False
-        attempt_texts: list = []
-        attempt_calls: list = []
-        try:
-            async for event in _run_once(attempt):
-                buffered_events.append(event)
-                if event.get("type") == "tool_calls":
-                    has_tool_calls = True
-                    attempt_calls = event.get("calls", [])
-                if event.get("type") == "text":
-                    attempt_texts.append(event.get("content", ""))
-                if event.get("type") == "done":
-                    has_done = True
-        except Exception as e:
-            last_err = e
-            if debug_log is not None:
-                debug_log.log_attempt(
-                    _round_no, tool_choice=attempt, finish_reason="error",
-                    content="".join(attempt_texts), tool_calls=attempt_calls,
-                    error=str(e)[:500],
-                )
-            if not buffered_events:
+                has_text = any(ev.get("type") == "text" for ev in buffered_events)
+                if has_text:
+                    for ev in buffered_events:
+                        yield ev
+                    return
                 continue
-            has_text = any(ev.get("type") == "text" for ev in buffered_events)
-            if has_text:
-                for ev in buffered_events:
-                    yield ev
+            else:
+                if debug_log is not None:
+                    debug_log.log_attempt(
+                        _round_no, tool_choice=attempt,
+                        finish_reason=_finish_state["reason"],
+                        content="".join(attempt_texts),
+                        tool_calls=attempt_calls,
+                    )
+
+            for ev in buffered_events:
+                yield ev
+            if has_done:
                 return
-            continue
-        else:
-            if debug_log is not None:
-                debug_log.log_attempt(
-                    _round_no, tool_choice=attempt,
-                    finish_reason=_finish_state["reason"],
-                    content="".join(attempt_texts),
-                    tool_calls=attempt_calls,
-                )
 
-        for ev in buffered_events:
-            yield ev
-        if has_done:
-            return
-
-    if last_err:
-        msg = str(last_err)
-        if "tool" in msg.lower() or "function" in msg.lower() or "unspported" in msg.lower() or "not support" in msg.lower():
-            _fb_texts: list = []
-            async for text in _stream_openai_compat(base_url, api_key, model, system, messages, max_tokens):
-                _fb_texts.append(text)
-                yield {"type": "text", "content": text}
+        if last_err:
+            msg = str(last_err)
+            if "tool" in msg.lower() or "function" in msg.lower() or "unspported" in msg.lower() or "not support" in msg.lower():
+                _fb_texts: list = []
+                async for text in _stream_openai_compat(base_url, api_key, model, system, messages, max_tokens):
+                    _fb_texts.append(text)
+                    all_response_text.append(text)
+                    yield {"type": "text", "content": text}
+                yield {"type": "done"}
+                if debug_log is not None:
+                    debug_log.log_attempt(
+                        _round_no, tool_choice="auto（降级：不带 tools）",
+                        finish_reason="stop", content="".join(_fb_texts), tool_calls=[],
+                        error=f"工具调用不受支持，已降级为纯文本模式: {msg[:300]}",
+                    )
+                return
+            call_error = msg[:500]
+            yield {"type": "text", "content": f"\n\n[API 调用失败: {msg[:300]}]"}
             yield {"type": "done"}
-            if debug_log is not None:
-                debug_log.log_attempt(
-                    _round_no, tool_choice="auto（降级：不带 tools）",
-                    finish_reason="stop", content="".join(_fb_texts), tool_calls=[],
-                    error=f"工具调用不受支持，已降级为纯文本模式: {msg[:300]}",
-                )
-            return
-        yield {"type": "text", "content": f"\n\n[API 调用失败: {msg[:300]}]"}
-        yield {"type": "done"}
-    return
+        return
+    finally:
+        resp_text = "".join(all_response_text)
+        ai_call_logger.finish(
+            call_id,
+            response_chars=len(resp_text),
+            response_summary=resp_text[:500] if resp_text else None,
+            error=call_error,
+        )

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { X, Plus, Save, Trash2, Pencil, Settings, ChevronDown, Check, Cpu } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { X, Plus, Save, Trash2, Pencil, Settings, ChevronDown, Check, Cpu, Image as ImageIcon } from 'lucide-react';
 import { api, type AIConfig, type SubTask, type TaskCreatePayload, type TaskInfo } from '../api/client';
 import { agentApi, type SettingsInfo, type CustomModel } from '../api/agentApi';
 import { authApi } from '../api/authApi';
@@ -104,10 +104,15 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
   const [dailyTotal, setDailyTotal] = useState(150);
   const [clickDelay, setClickDelay] = useState(5);
   const [aiEnabled, setAiEnabled] = useState(false);
+  const [aiMatchEnabled, setAiMatchEnabled] = useState(false);
   const [aiProvider, setAiProvider] = useState('deepseek');
   const [aiModel, setAiModel] = useState('');
   const [aiResume, setAiResume] = useState('');
   const [aiExpectJd, setAiExpectJd] = useState('');
+  const [greetImage, setGreetImage] = useState<string | null>(null);
+  const [imageUploading, setImageUploading] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const [aiSettings, setAiSettings] = useState<SettingsInfo | null>(null);
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
@@ -122,10 +127,14 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
     setDailyTotal(150);
     setClickDelay(5);
     setAiEnabled(false);
+    setAiMatchEnabled(false);
     setAiProvider('deepseek');
     setAiModel('');
     setAiResume('');
     setAiExpectJd('');
+    setGreetImage(null);
+    setImageUploading(false);
+    setImageError(null);
     setSubmitting(false);
     setError(null);
   };
@@ -139,10 +148,14 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
     setClickDelay(t.click_delay_seconds ?? 5);
     const ai = t.ai_config;
     setAiEnabled(ai?.enabled ?? false);
+    setAiMatchEnabled(ai?.match_enabled ?? false);
     setAiProvider(ai?.provider || 'deepseek');
     setAiModel(ai?.model || '');
     setAiResume(ai?.resume || '');
     setAiExpectJd(ai?.expect_jd || '');
+    setGreetImage(t.greet_image || null);
+    setImageUploading(false);
+    setImageError(null);
     const list = (t.sub_tasks && t.sub_tasks.length > 0)
       ? t.sub_tasks
       : (t.filter ? [{ filter: t.filter, limit: t.daily_limit }] : []);
@@ -170,9 +183,9 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
     else reset();
   }, [open, editing]);
 
-  // 加载 AI 设置和模型列表
+  // 加载 AI 设置和模型列表（任一 AI 开关启用都需要模型列表）
   useEffect(() => {
-    if (!open || !aiEnabled) return;
+    if (!open || (!aiEnabled && !aiMatchEnabled)) return;
     agentApi.getSettings().then(s => {
       setAiSettings(s);
       const providers = s.providers as Record<string, ProviderConfig>;
@@ -211,12 +224,30 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
         setModelOptions(opts.filter(o => o.hasKey));
       });
     }).catch(() => {});
-  }, [open, aiEnabled]);
+  }, [open, aiEnabled, aiMatchEnabled]);
 
   const handleModelSelect = (opt: ModelOption) => {
     setAiProvider(opt.providerKey);
     setAiModel(opt.modelId);
     setModelDropdownOpen(false);
+  };
+
+  const handleImagePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // 允许连续选择同一文件
+    if (!file) return;
+    setImageUploading(true);
+    setImageError(null);
+    try {
+      const { filename } = await api.uploadGreetImage(file);
+      setGreetImage(filename);
+    } catch (err: any) {
+      let msg = err?.message || '上传失败';
+      try { msg = JSON.parse(msg).detail || msg; } catch { /* keep */ }
+      setImageError(`图片上传失败：${msg}`);
+    } finally {
+      setImageUploading(false);
+    }
   };
 
   if (!open) return null;
@@ -249,6 +280,7 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
       click_delay_seconds: Math.max(0, Math.min(30, clickDelay)),
       ai_config: {
         enabled: aiEnabled,
+        match_enabled: aiMatchEnabled,
         provider: aiProvider,
         api_key: '',
         base_url: '',
@@ -256,6 +288,7 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
         resume: aiResume.trim(),
         expect_jd: aiExpectJd.trim(),
       },
+      greet_image: greetImage || null,
     };
   };
 
@@ -418,24 +451,41 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
             />
           </Field>
 
-          {/* AI 招呼语生成 */}
+          {/* AI 智能招呼语：两个相互独立的开关 */}
           <div className="border border-slate-700 rounded-lg p-3 bg-slate-800/40 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-slate-300 font-medium">
-                AI 智能招呼语（根据 JD 自动生成）
-              </span>
-              <label className="flex items-center gap-2 cursor-pointer">
+            <div className="space-y-2.5">
+              <span className="block text-sm text-slate-300 font-medium">AI 智能招呼语</span>
+
+              {/* 开关一：AI 匹配筛选（独立于生成招呼语） */}
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={aiMatchEnabled}
+                  onChange={(e) => setAiMatchEnabled(e.target.checked)}
+                  className="w-4 h-4 mt-0.5 accent-emerald-500"
+                />
+                <span className="flex flex-col">
+                  <span className="text-xs text-slate-300">AI 匹配筛选（判断 JD 是否匹配，跳过不匹配岗位）</span>
+                  <span className="text-[11px] text-slate-500">勾选后只对匹配的岗位发起沟通；不匹配则跳过。即使不启用下面的“AI 生成招呼语”，匹配后也会发默认招呼语并自动发图。</span>
+                </span>
+              </label>
+
+              {/* 开关二：AI 生成招呼语（独立于匹配筛选） */}
+              <label className="flex items-start gap-2 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={aiEnabled}
                   onChange={(e) => setAiEnabled(e.target.checked)}
-                  className="w-4 h-4 accent-sky-500"
+                  className="w-4 h-4 mt-0.5 accent-sky-500"
                 />
-                <span className="text-xs text-slate-400">启用</span>
+                <span className="flex flex-col">
+                  <span className="text-xs text-slate-300">AI 生成招呼语（根据 JD 自动生成个性化文案）</span>
+                  <span className="text-[11px] text-slate-500">不勾选则使用默认招呼语（不影响自动发图）。</span>
+                </span>
               </label>
             </div>
 
-            {aiEnabled && (
+            {(aiEnabled || aiMatchEnabled) && (
               <>
                 {/* 模型选择下拉框 */}
                 <div className="space-y-2">
@@ -535,10 +585,61 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
                   />
                 </Field>
                 <div className="text-xs text-slate-500">
-                  启用后，将根据岗位 JD 内容由 AI 生成个性化招呼语；上方自定义招呼语作为 AI 失败时的兜底。
+                  上述模型与背景信息同时用于“AI 匹配筛选”和“AI 生成招呼语”：只勾选匹配筛选时会用默认招呼语；勾选生成招呼语时才用 AI 文案（AI 失败时回退默认）。
                 </div>
               </>
             )}
+
+            {/* 招呼后自动发送固定图片（独立于 AI 开关，始终可选） */}
+            <div className="space-y-2 pt-3 border-t border-slate-700/50">
+              <span className="block text-xs text-slate-400">发送招呼语后自动追加发送的固定图片（选填，无需启用 AI）</span>
+              <div className="flex items-center gap-3">
+                <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={handleImagePick} />
+                {greetImage ? (
+                  <>
+                    <img
+                      src={api.greetImagePreviewUrl(greetImage)}
+                      alt="招呼图片"
+                      className="w-16 h-16 rounded-lg object-cover border border-slate-600"
+                    />
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-xs text-slate-400 max-w-[260px] truncate" title={greetImage}>{greetImage}</span>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => imageInputRef.current?.click()}
+                          disabled={imageUploading}
+                          className="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50"
+                        >
+                          更换图片
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setGreetImage(null)}
+                          className="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-red-600/70"
+                        >
+                          清除
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => imageInputRef.current?.click()}
+                    disabled={imageUploading}
+                    className="w-16 h-16 rounded-lg border border-dashed border-slate-600 hover:border-sky-500 flex flex-col items-center justify-center gap-1 text-slate-500 hover:text-sky-400 transition-colors disabled:opacity-50"
+                  >
+                    <ImageIcon size={18} />
+                    <span className="text-[10px]">{imageUploading ? '上传中…' : '选图片'}</span>
+                  </button>
+                )}
+              </div>
+              {imageError && <div className="text-xs text-red-400">{imageError}</div>}
+              <div className="text-xs text-slate-500">
+                发送时机：招呼语（AI 生成或默认招呼语）发出后，自动在同一聊天里追加这张图（全程不弹系统文件选择框）。
+              </div>
+            </div>
           </div>
 
           <div className="grid grid-cols-3 gap-3">

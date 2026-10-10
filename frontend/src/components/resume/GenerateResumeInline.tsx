@@ -188,10 +188,20 @@ export function GenerateResumeInline({ job, onGenerated, visible, onClose }: Pro
             disabled={generating}
             className="w-full text-left bg-surface-900/60 border border-slate-700/50 hover:border-accent-purple/40 rounded-md px-2.5 py-2 transition-colors disabled:opacity-40 group"
           >
-            {profile && (profile.name.trim() || profile.projects.trim() || profile.education.trim() || profile.campus.trim() || profile.work.trim() || profile.skills.trim() || profile.summary.trim()) ? (
+            {profile && (profile.name.trim() || profile.projects.trim() || profile.education.trim() || profile.campus.trim() || profile.work.trim() || profile.skills.trim() || profile.summary.trim() || profile.avatar.trim()) ? (
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
-                  <span className="flex items-center gap-1 text-[11px] text-accent-purple"><UserCircle size={11} /> 个人背景档案</span>
+                  <span className="flex items-center gap-1 text-[11px] text-accent-purple">
+                    {profile.avatar.trim() && (
+                      <img
+                        src={agentApi.avatarPreviewUrl(agentApi.avatarFilename(profile.avatar))}
+                        alt="头像"
+                        className="w-4 h-4 rounded-full object-cover border border-accent-purple/40"
+                        onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                      />
+                    )}
+                    <UserCircle size={11} /> 个人背景档案
+                  </span>
                   <Pencil size={10} className="text-slate-600 group-hover:text-slate-400" />
                 </div>
                 <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-slate-400">

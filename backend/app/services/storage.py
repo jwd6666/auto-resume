@@ -78,6 +78,7 @@ def init_db() -> None:
             "ALTER TABLE greeted_jobs ADD COLUMN sub_index INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE tasks ADD COLUMN ai_config_json TEXT",
             "ALTER TABLE greeted_jobs ADD COLUMN jd_text TEXT",
+            "ALTER TABLE tasks ADD COLUMN greet_image TEXT",
         ]:
             try: c.execute(stmt)
             except sqlite3.OperationalError: pass
@@ -108,8 +109,8 @@ def save_task(info: TaskInfo) -> None:
             INSERT OR REPLACE INTO tasks(
                 id, name, filter_json, greetings_json,
                 interval_seconds, daily_limit, click_delay_seconds,
-                sub_tasks_json, ai_config_json, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sub_tasks_json, ai_config_json, greet_image, created_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 info.id, info.name,
@@ -118,6 +119,7 @@ def save_task(info: TaskInfo) -> None:
                 info.interval_seconds, info.daily_limit, info.click_delay_seconds,
                 json.dumps([s.model_dump() for s in sub_tasks], ensure_ascii=False),
                 info.ai_config.model_dump_json() if info.ai_config else None,
+                info.greet_image,
                 info.created_at,
             ),
         )
@@ -185,6 +187,7 @@ def _row_to_task(row: sqlite3.Row) -> TaskInfo:
         interval_seconds=row["interval_seconds"], daily_limit=daily_limit,
         click_delay_seconds=row["click_delay_seconds"] if "click_delay_seconds" in keys else 5,
         ai_config=_parse_ai_config(row, keys),
+        greet_image=row["greet_image"] if "greet_image" in keys else None,
         created_at=row["created_at"],
     )
 

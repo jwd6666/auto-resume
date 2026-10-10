@@ -38,8 +38,15 @@ class SubTask(BaseModel):
 
 
 class AIConfig(BaseModel):
-    """AI 招呼语生成配置。"""
+    """AI 招呼语生成配置。
+
+    enabled 与 match_enabled 是两个相互独立的开关：
+      - enabled：是否用 AI 生成的文案作为招呼语（关闭则用默认招呼语）
+      - match_enabled：是否让 AI 判断 JD 是否匹配并跳过不匹配岗位
+    两者可任意组合，只要有一个为真就会调用 AI（需配置 provider/model）。
+    """
     enabled: bool = Field(default=False, description="是否启用 AI 生成招呼语")
+    match_enabled: bool = Field(default=False, description="是否启用 AI 匹配筛选（判断 JD 是否匹配并跳过不匹配岗位），独立于生成招呼语")
     provider: str = Field(default="deepseek", description="AI 提供商：deepseek/glm/qwen/openai")
     api_key: str = Field(default="", description="API Key")
     base_url: str = Field(default="", description="API Base URL，留空按 provider 自动填充")
@@ -61,6 +68,7 @@ class TaskCreate(BaseModel):
     daily_limit: int = Field(default=50, ge=1, le=2000)
     click_delay_seconds: int = Field(default=5, ge=0, le=30)
     ai_config: Optional[AIConfig] = None
+    greet_image: Optional[str] = Field(default=None, description="AI 招呼语发送成功后自动追加发送的固定图片（greet_images 目录下的文件名）")
 
 
 class TaskInfo(BaseModel):
@@ -81,3 +89,4 @@ class TaskInfo(BaseModel):
     has_login: bool = False
     created_at: str
     ai_config: Optional[AIConfig] = None
+    greet_image: Optional[str] = None

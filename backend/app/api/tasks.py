@@ -1,17 +1,28 @@
 """任务 REST 路由。"""
 from __future__ import annotations
 
+import time
+from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from ..core.config import GREET_IMAGES_DIR
 from ..core.logger import get_logger
 from ..schemas.task import TaskCreate
 from ..services import storage
 from ..services.task_manager import manager
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+
+# 打招呼固定图片：允许的 mime → 扩展名；文件名后缀做兼容兑底
+_GREET_IMAGE_MIME_EXT = {
+    "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif",
+    "image/webp": "webp", "image/bmp": "bmp",
+}
+_GREET_IMAGE_EXT_ALLOWED = {"jpg", "jpeg", "png", "gif", "webp", "bmp"}
 
 
 @router.get("")
@@ -23,6 +34,44 @@ async def list_tasks() -> dict:
 async def create_task(payload: TaskCreate) -> dict:
     info = await manager.create(payload)
     return info.model_dump()
+
+
+@router.post("/upload-greet-image")
+async def upload_greet_image(file: UploadFile = File(...)) -> dict:
+    """上传打招呼固定图片：AI 招呼语发送成功后由自动化追加发送给对方。
+
+    保存到安装目录 data/greet_images，返回文件名；任务配置只存文件名。
+    """
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "图片文件为空")
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(400, "图片超过 10MB 限制")
+
+    ext = _GREET_IMAGE_MIME_EXT.get((file.content_type or "").lower())
+    if not ext:
+        # 兑底按文件名后缀判断（部分运行环境对 content_type 判定不一致）
+        name_ext = Path(file.filename or "").suffix.lstrip(".").lower()
+        if name_ext in _GREET_IMAGE_EXT_ALLOWED:
+            ext = "jpg" if name_ext == "jpeg" else name_ext
+        else:
+            raise HTTPException(400, "仅支持 jpg / png / gif / webp / bmp 格式图片")
+
+    GREET_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    img_file = GREET_IMAGES_DIR / f"greet_{int(time.time() * 1000)}.{ext}"
+    img_file.write_bytes(content)
+    return {"filename": img_file.name}
+
+
+@router.get("/greet-image/{filename}")
+def get_greet_image(filename: str):
+    """输出打招呼图片，供前端 <img> 预览（无法携带请求头，令牌走 ?token= 查询参数）。"""
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(400, "Invalid filename")
+    p = GREET_IMAGES_DIR / filename
+    if not p.is_file():
+        raise HTTPException(404, "Image not found")
+    return FileResponse(p)
 
 
 @router.get("/greeted-recent")

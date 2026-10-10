@@ -74,6 +74,7 @@ class TaskManager:
             daily_limit=payload.daily_limit,
             click_delay_seconds=payload.click_delay_seconds,
             ai_config=payload.ai_config,
+            greet_image=payload.greet_image,
             created_at=datetime.now().isoformat(timespec="seconds"),
         )
         storage.save_task(info)
@@ -99,6 +100,7 @@ class TaskManager:
         rt.info.daily_limit = payload.daily_limit
         rt.info.click_delay_seconds = payload.click_delay_seconds
         rt.info.ai_config = payload.ai_config
+        rt.info.greet_image = payload.greet_image
         storage.save_task(rt.info)
         return rt.info
 
@@ -167,6 +169,7 @@ class TaskManager:
             daily_limit=rt.info.daily_limit,
             click_delay_seconds=rt.info.click_delay_seconds,
             ai_config=rt.info.ai_config,
+            greet_image=rt.info.greet_image,
             logger=logger, on_log=on_log, on_status=on_status,
         )
 

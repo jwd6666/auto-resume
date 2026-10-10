@@ -1,6 +1,7 @@
 /** 个人背景档案弹窗：表单化录入个人信息，保存为 profile content 文本，生成简历时自动注入 */
-import { useEffect, useState } from 'react';
-import { UserCircle, Plus, Trash2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { UserCircle, Plus, Trash2, Upload, XCircle } from 'lucide-react';
+import { agentApi } from '../../api/agentApi';
 import { Modal } from './ui';
 
 export interface BackgroundProfileForm {
@@ -10,6 +11,7 @@ export interface BackgroundProfileForm {
   email: string;
   hometown: string;
   intent: string;
+  avatar: string;
   education: string;
   campus: string;
   honors: string;
@@ -20,14 +22,14 @@ export interface BackgroundProfileForm {
 }
 
 const EMPTY_FORM: BackgroundProfileForm = {
-  name: '', gender: '', phone: '', email: '', hometown: '', intent: '',
+  name: '', gender: '', phone: '', email: '', hometown: '', intent: '', avatar: '',
   education: '', campus: '', honors: '', work: '', projects: '', skills: '', summary: '',
 };
 
 /** content 文本标签 → 表单字段（含旧标签别名，保证老数据可解析） */
 const LABEL_TO_FIELD: Record<string, keyof BackgroundProfileForm> = {
   '姓名': 'name', '性别': 'gender', '电话': 'phone', '邮箱': 'email', '籍贯': 'hometown',
-  '求职意向': 'intent',
+  '求职意向': 'intent', '头像': 'avatar',
   '教育背景': 'education', '教育经历': 'education',
   '校园经历': 'campus', '校园实践': 'campus',
   '荣誉证书': 'honors', '获奖证书': 'honors', '荣誉奖项': 'honors',
@@ -38,11 +40,11 @@ const LABEL_TO_FIELD: Record<string, keyof BackgroundProfileForm> = {
 };
 
 /** 单行字段（其余为多行文本域） */
-const SINGLE_FIELDS = new Set<keyof BackgroundProfileForm>(['name', 'gender', 'phone', 'email', 'hometown', 'intent']);
+const SINGLE_FIELDS = new Set<keyof BackgroundProfileForm>(['name', 'gender', 'phone', 'email', 'hometown', 'intent', 'avatar']);
 
 /** 序列化顺序 */
 const SERIAL_ORDER: [string, keyof BackgroundProfileForm][] = [
-  ['姓名', 'name'], ['性别', 'gender'], ['电话', 'phone'], ['邮箱', 'email'], ['籍贯', 'hometown'], ['求职意向', 'intent'],
+  ['姓名', 'name'], ['性别', 'gender'], ['电话', 'phone'], ['邮箱', 'email'], ['籍贯', 'hometown'], ['求职意向', 'intent'], ['头像', 'avatar'],
   ['教育背景', 'education'], ['校园经历', 'campus'], ['荣誉证书', 'honors'], ['工作经历', 'work'], ['项目经历', 'projects'], ['专业技能', 'skills'], ['自我评价', 'summary'],
 ];
 
@@ -106,17 +108,49 @@ export function BackgroundProfileModal({ open, onClose, content, onSave }: Props
   const [form, setForm] = useState<BackgroundProfileForm>(EMPTY_FORM);
   // 荣誉证书以多行数组形式管理，与 form.honors（换行拼接）双向同步
   const [honorList, setHonorList] = useState<string[]>([]);
+  // 头像上传中 / 上传失败信息 / 头像文件已不存在（预览加载失败）
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [avatarError, setAvatarError] = useState('');
+  const [avatarBroken, setAvatarBroken] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (open) {
       const parsed = parseProfileContent(content);
       setForm(parsed);
       setHonorList(parsed.honors ? parsed.honors.split('\n').filter(x => x.trim()) : []);
+      setAvatarError('');
+      setAvatarBroken(false);
     }
   }, [open, content]);
 
   const set = (key: keyof BackgroundProfileForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
     setForm(prev => ({ ...prev, [key]: e.target.value }));
+
+  // 头像上传：保存到安装目录 data/avatars，仅记录返回的绝对路径
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setAvatarError('');
+    setAvatarUploading(true);
+    try {
+      const { path } = await agentApi.uploadAvatar(file);
+      setAvatarBroken(false);
+      setForm(prev => ({ ...prev, avatar: path }));
+    } catch (err: any) {
+      setAvatarError(err?.message || '头像上传失败');
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
+
+  const removeAvatar = () => {
+    setForm(prev => ({ ...prev, avatar: '' }));
+    setAvatarBroken(false);
+  };
+
+  const avatarUrl = form.avatar ? agentApi.avatarPreviewUrl(agentApi.avatarFilename(form.avatar)) : '';
 
   const handleSave = () => {
     const honors = honorList.map(s => s.trim()).filter(Boolean).join('\n');
@@ -157,6 +191,45 @@ export function BackgroundProfileModal({ open, onClose, content, onSave }: Props
             <label className={labelCls}>求职意向</label>
             <input value={form.intent} onChange={set('intent')} placeholder="Java后端开发工程师" className={inputCls} />
           </div>
+        </div>
+
+        <div>
+          <label className={labelCls}>
+            头像 <span className="text-slate-600">(可选，生成简历时自动嵌入头像框)</span>
+          </label>
+          <div className="flex items-center gap-3">
+            <input ref={avatarInputRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarUpload} />
+            {form.avatar && !avatarBroken ? (
+              <div className="relative w-14 h-14 rounded-full overflow-hidden border-2 border-slate-600/40 bg-surface-900 shrink-0 group">
+                <img
+                  src={avatarUrl}
+                  alt="头像"
+                  className="w-full h-full object-cover cursor-pointer"
+                  onClick={() => avatarInputRef.current?.click()}
+                  onError={() => setAvatarBroken(true)}
+                />
+                <button
+                  onClick={removeAvatar}
+                  className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-red-500/80 text-white flex items-center justify-center hover:bg-red-500"
+                  title="移除头像"
+                >
+                  <XCircle size={10} />
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => avatarInputRef.current?.click()}
+                disabled={avatarUploading}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md bg-surface-900/60 border border-slate-700/50 text-slate-400 hover:text-slate-200 hover:border-slate-600/60 transition-colors disabled:opacity-40 shrink-0"
+              >
+                <Upload size={11} /> {avatarUploading ? '上传中…' : '上传头像'}
+              </button>
+            )}
+            <p className="text-[10px] text-slate-600 leading-relaxed">
+              保存在安装目录 data/avatars 下；生成简历时以本地绝对路径嵌入简历头像框{avatarBroken && form.avatar ? '（原头像文件已不存在，请重新上传）' : ''}
+            </p>
+          </div>
+          {avatarError && <p className="text-[10px] text-red-400 mt-1">{avatarError}</p>}
         </div>
 
         {MULTI_FIELDS.map(mf => (

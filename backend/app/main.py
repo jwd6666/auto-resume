@@ -16,6 +16,7 @@ from .core.cloud_auth import cloud_auth
 from .services import storage
 from .services.task_manager import manager
 from .services.resume_db import init_resume_db
+from .services.ai_call_log import init_ai_call_log_db, ai_call_logger
 
 
 @asynccontextmanager

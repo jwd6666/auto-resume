@@ -543,6 +543,33 @@ export const agentApi = {
     return r.json();
   },
 
+  /** 上传候选人头像 → 固定保存到 data/avatars/avatar.jpg，返回本地绝对路径（生成简历时发给模型引用） */
+  async uploadAvatar(file: File): Promise<{ path: string; filename: string }> {
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch(`${AGENT}/uploads/avatar`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: fd,
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+
+  /** 头像预览 URL：<img> 无法携带请求头，令牌走查询参数（与 webview 加载一致） */
+  avatarPreviewUrl(filename: string): string {
+    const base = isDev
+      ? 'http://127.0.0.1:8765'
+      : (window as any).autoresume?.apiBase || '';
+    return withTokenQuery(`${base}${AGENT.replace(API_BASE, '')}/avatars/${encodeURIComponent(filename)}`);
+  },
+
+  /** 从头像绝对路径提取文件名（用于生成预览 URL） */
+  avatarFilename(path: string): string {
+    const segs = path.split(/[\\/]/);
+    return segs[segs.length - 1] || '';
+  },
+
   async *uploadResumePdfStream(file: File): AsyncGenerator<{ type: string; content?: string; parser?: string; warning?: string | null }> {
     const fd = new FormData();
     fd.append('file', file);

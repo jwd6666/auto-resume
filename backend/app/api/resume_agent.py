@@ -13,6 +13,7 @@ import random
 import asyncio
 import base64
 import socket
+import time
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -22,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, File, Query, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from docx import Document
@@ -35,7 +36,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer
 
-from ..core.config import DATA_DIR
+from ..core.config import DATA_DIR, AVATARS_DIR
 from ..services.resume_db import get_db
 from ..schemas import resume_models as models
 from ..schemas import resume_schemas as schemas
@@ -876,6 +877,32 @@ def _merge_profile_background(db: Session, background: str) -> str:
     return f"{profile_text}\n\n{background}" if background else profile_text
 
 
+def _avatar_directive(background: str) -> str:
+    """从候选人背景文本中提取「头像：本地绝对路径」，生成头像引用指令。
+
+    头像统一存放在安装目录 data/avatars 下；生成简历时把绝对路径发给模型，
+    让其在头像框中用 <img src="绝对路径"> 原样引用。预览（webview file:///
+    http 内联）与导出层已有本地路径图片的渲染兜底，模型侧无需转 base64。
+    """
+    if not background:
+        return ""
+    m = re.search(r"^头像[：:]\s*(.+?)\s*$", background, flags=re.MULTILINE)
+    if not m:
+        return ""
+    raw = m.group(1).strip().strip('"').strip("'")
+    p = Path(raw)
+    if not p.is_file():
+        return ""
+    abs_path = str(p.resolve())
+    return (
+        f"\n\n---\n\n## 候选人头像\n\n"
+        f"候选人头像文件的本地绝对路径：`{abs_path}`\n"
+        f"必须在简历头像框中原样引用该路径：`<img src=\"{abs_path}\">`。"
+        f"禁止改写为相对路径、base64 或虚构的网络 URL；"
+        f"若当前布局没有头像框，则在姓名旁新增圆形头像框放置该图片（正圆、object-fit: cover）。"
+    )
+
+
 @router.post("/resumes/generate", response_model=schemas.ResumeResponse)
 async def generate_resume(body: GenerateResumeRequest, db: Session = Depends(get_db)):
     """AI 根据候选人背景 + 目标岗位 JD 直接生成完整简历 HTML，写入磁盘。"""
@@ -896,6 +923,7 @@ async def generate_resume(body: GenerateResumeRequest, db: Session = Depends(get
     accent = body.accent if body.accent in ACCENTS else "#2563eb"
     user_msg += f"\n\n---\n\n请使用主题色 {accent}，生成一份完整简历 HTML。"
     user_msg = _append_layout_directive(user_msg, body.style, accent)
+    user_msg += _avatar_directive(background)
 
 
     raw = await complete_response(SYSTEM_GENERATE_RESUME, [{"role": "user", "content": user_msg}])
@@ -949,6 +977,7 @@ async def generate_resume_stream(body: GenerateResumeRequest, db: Session = Depe
     accent = body.accent if body.accent in ACCENTS else "#2563eb"
     user_msg += f"\n\n---\n\n请使用主题色 {accent}，生成一份完整简历 HTML。"
     user_msg = _append_layout_directive(user_msg, body.style, accent)
+    user_msg += _avatar_directive(background)
 
 
     async def _stream_gen():
@@ -1767,6 +1796,48 @@ def clear_api_key(provider: str):
 # ══════════════════════════════════════════════════════════════
 # 6. uploads 路由
 # ══════════════════════════════════════════════════════════════
+
+_AVATAR_MIME_EXT = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/bmp": "bmp",
+}
+
+
+@router.post("/uploads/avatar")
+async def upload_avatar(file: UploadFile = File(...)):
+    """上传候选人头像，固定保存到安装目录 data/avatars 下。
+
+    返回本地绝对路径；生成简历时把该绝对路径发给模型，由模型在头像框中
+    以 <img src="绝对路径"> 引用（预览/导出层负责渲染本地路径图片）。
+    """
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="头像文件为空")
+    if len(content) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="头像文件超过 8MB 限制")
+    ext = _AVATAR_MIME_EXT.get((file.content_type or "").lower())
+    if not ext:
+        raise HTTPException(status_code=400, detail="仅支持 png / jpg / gif / webp / bmp 格式图片")
+
+    AVATARS_DIR.mkdir(parents=True, exist_ok=True)
+    avatar_file = AVATARS_DIR / f"avatar_{int(time.time() * 1000)}.{ext}"
+    avatar_file.write_bytes(content)
+    return {"path": str(avatar_file.resolve()), "filename": avatar_file.name}
+
+
+@router.get("/avatars/{filename}")
+def get_avatar_file(filename: str):
+    """输出头像图片，供前端 <img> 预览（无法携带请求头，令牌走 ?token= 查询参数）。"""
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    p = AVATARS_DIR / filename
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    return FileResponse(p)
+
 
 @router.post("/uploads/parse-resume-background", response_model=ParseResumeBackgroundResponse)
 async def parse_resume_background(file: UploadFile = File(...)):

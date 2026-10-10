@@ -28,6 +28,8 @@ export interface SubTask {
 
 export interface AIConfig {
   enabled: boolean;
+  /** 独立的 AI 匹配筛选开关：判断 JD 是否匹配并跳过不匹配岗位，与生成招呼语无关 */
+  match_enabled?: boolean;
   provider: string;
   api_key: string;
   base_url: string;
@@ -55,6 +57,8 @@ export interface TaskInfo {
   last_msg?: string | null;
   created_at: string;
   ai_config?: AIConfig | null;
+  /** AI 招呼语发送成功后自动追加发送的固定图片（greet_images 目录下的文件名） */
+  greet_image?: string | null;
 }
 
 export interface TaskCreatePayload {
@@ -65,6 +69,7 @@ export interface TaskCreatePayload {
   daily_limit: number;
   click_delay_seconds: number;
   ai_config?: AIConfig | null;
+  greet_image?: string | null;
 }
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -99,6 +104,23 @@ export const api = {
     ),
   resetAiJudged: (id: string) =>
     http<{ ok: boolean; deleted: number }>(`/api/tasks/${id}/reset-ai-judged`, { method: 'POST' }),
+  /** 上传打招呼固定图片 → 保存到后端 data/greet_images，返回文件名 */
+  uploadGreetImage: async (file: File): Promise<{ filename: string }> => {
+    const fd = new FormData();
+    fd.append('file', file);
+    const res = await fetch(`${API_BASE}/api/tasks/upload-greet-image`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: fd,
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+  /** 图片预览 URL：<img> 无法携带请求头，令牌走查询参数（与头像预览一致） */
+  greetImagePreviewUrl(filename: string): string {
+    const base = isDev ? 'http://127.0.0.1:8765' : API_BASE;
+    return withTokenQuery(`${base}/api/tasks/greet-image/${encodeURIComponent(filename)}`);
+  },
 };
 
 export function openTaskWS(taskId: string, onMessage: (m: any) => void): WebSocket {
