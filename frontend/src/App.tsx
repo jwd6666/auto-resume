@@ -231,6 +231,7 @@ export default function App() {
       case 'ai-copy': return null;
       case 'job-manage': return loggedIn ? <JobManagePage /> : <LoginGate fullPage title="岗位管理需要登录后使用" subtitle="登录后即可管理岗位与打招呼记录" />;
       case 'job-analysis': return null;
+      case 'boss-config': return renderPlaceholder('BOSS配置', '配置 BOSS直聘 平台相关参数');
       case 'system-settings': return <SystemSettingsPage userAccount={userAccount} />;
       default: return renderHome();
     }

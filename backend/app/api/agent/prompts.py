@@ -197,84 +197,42 @@ SYSTEM_GENERATE_RESUME = """# 角色
 
 生成一份 A4 尺寸、可直接打印的个人简历 HTML 页面（内联样式，单文件），要求如下：
 
-【整体布局 — 深色侧边栏双栏】
-- 页面容器 .page：width: 210mm; height: 297mm; display: flex; overflow: hidden; background: #fff; box-shadow 预览用
-- 左侧深色侧边栏 .sidebar：width: 58mm; min-width: 58mm; height: 100%; background: linear-gradient(160deg, #0d1b2a 0%, #16304d 50%, #1b3a5c 100%); color: #e2e8f0; padding: 7mm 5mm 6mm 5mm; flex-direction: column; position: relative
-- 侧边栏右侧加 3px 渐变竖线装饰（::after 伪元素，#00b4d8 → #0077b6）
-- 右侧主内容区 .main：flex: 1; height: 100%; padding: 7mm 7mm 6mm 7mm; overflow: hidden
+【排版布局】
+本次请求的 user message 中会给出唯一一种「排版布局」指令，页面结构与全部视觉样式严格按该指令执行；除所选这一种外，不得混入其它布局风格的元素与装饰。
 
-【侧边栏内容 — 从上到下】
-1. 圆形头像框 .avatar-frame：28mm × 28mm，圆形，border: 3px solid #00b4d8，深色渐变背景，居中，阴影 box-shadow: 0 0 16px rgba(0,180,216,0.25)
-   - 有头像时用 <img>，无头像时显示姓名首字（.avatar-placeholder，36px 粗体 #90e0ef）
-2. 姓名区 .name-block：姓名 h1（26px 700 #fff，letter-spacing: 3px），下方求职意向 .title（13px #90e0ef，letter-spacing: 1px）
-3. 分割线 .sidebar-divider：1.5px 高，背景 linear-gradient(90deg, #00b4d8, transparent)
-4. 联系方式 .sb-section：标题 .sb-title（14px 700 #fff，左侧 3px #00b4d8 竖条装饰，右侧英文小标签 .en 如 "CONTACT"）
-   - 每条 .contact-item：Bootstrap Icons 图标 + 文字（11.5px #cbd5e1）
-   - 在 <head> 引入 Bootstrap Icons CDN：<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-   - 图标用 <i class="bi bi-xxx"> 写法，颜色 color: #48cae4，字号 font-size: 14px
-   - 图标 class 对照：电话 bi-telephone、邮箱 bi-envelope、GitHub bi-github、地址 bi-geo-alt
-5. 教育背景 .sb-section：学校名 .edu-school（13px 600 #f1f5f9）、时间 .edu-date（11.5px #94a3b8）、专业 .edu-major（12px #cbd5e1）、补充信息 .edu-meta（11.5px #94a3b8）
-6. 专业技能 .sb-section：每类 .skill-group 含 .skill-label（12px 700 #48cae4）+ .skill-val（11.5px #e2e8f0）
-
-【主内容区 — 从上到下】
-1. 项目经历：大标题 .main-sec-title（17px 700 #0d1b2a，左侧 4px 渐变竖条装饰，右侧英文副标签如 "PROJECTS"），下方 2px solid #e2e8f0 横线
-   - 每个项目 .project：左侧 2.5px solid #e2e8f0 竖线
-   - 项目头 .project-head：项目名 .project-name（14.5px 700 #0d1b2a）+ 角色 .role（12.5px #0077b6，前空7px） + 日期 .project-date（12.5px #64748b，右对齐）
-   - 技术标签 .project-tech：每个 .tag 是 inline-block，背景 #f0f7fb，border 1px solid #c5e3f0，color #0369a1，圆角 3px，padding 1px 7px
-   - 要点列表 ul li：13px #334155，左侧 5px #00b4d8 圆点，关键词 <b> 用 #0d1b2a 600
-2. 校园经历 .campus-section（候选人背景中若有「校园经历/校园实践/学生工作/社团/竞赛获奖」等，此板块【必须】独立成块输出，不得省略、不得只在项目里一笔带过）：大标题同样用 .main-sec-title（右侧英文副标签如 "CAMPUS"），下方复用 .project 结构，每段含 组织/赛事名 .project-name + 职务/角色 .role + 时间 .project-date + 要点 ul li
-   - 应届/无工作经历的候选人：把校园经历作为主区域第一段，排在项目经历之前
-3. 自我评价 .eval-section：顶部 2px solid #e2e8f0 分割线
-   - 标题 .eval-title 同样带竖条装饰
-   - 内容为一整段连续文字 .eval-text：13px #334155，line-height: 1.7，禁止使用列表/网格/分列/方块布局，直接用一段流畅的段落描述候选人的核心优势与职业特质
-
-【配色体系】
-- 侧边栏背景：linear-gradient(160deg, #0d1b2a, #16304d, #1b3a5c)
-- 强调色/装饰：#00b4d8（青蓝）用于头像边框、竖条装饰、圆点、标签
-- 侧边栏文字层级：标题 #fff，强调 #48cae4 / #90e0ef，正文 #cbd5e1，次要 #94a3b8
-- 主区域文字层级：标题 #0d1b2a，正文 #334155，次要 #64748b，分割线 #e2e8f0
-- 标签背景：#f0f7fb，标签边框：#c5e3f0，标签文字：#0369a1
-
-【字体与间距】
-- 字体：PingFang SC / Microsoft YaHei / Helvetica Neue / Segoe UI / Arial / sans-serif
-- 全局字号 13px，行高 1.6
-- 姓名 26px 700 letter-spacing: 3px
-- 模块标题：侧边栏 14px 700，主区域 17px 700
-- 项目名 14.5px 700，正文要点 13px
-- 技术标签 11.5px
-- 间距整体紧凑：主区域模块间距 3mm、条目/要点间距 2mm；侧边栏各信息组间距 3.5mm、组内条目间距 1.5mm
-- 头像框固定 28mm × 28mm 正圆（宽高必须相等，border-radius: 50%）：无论内容多少、空间多紧，禁止缩小、压扁、拉伸头像；头像 <img> 用 object-fit: cover 保持比例不变形。空间不足时只压缩文字内容与间距，绝不动头像尺寸
-- -webkit-print-color-adjust: exact; print-color-adjust: exact
+【板块内容要求】（与布局无关，任何布局下均适用）
+- 简历必须包含以下板块（语义与 data-resume-section 对应关系见【HTML 结构要求】）：个人信息、教育背景、项目经历、实习经历、校园经历、专业技能、荣誉证书、自我评价；排版布局未列出的板块可省略，板块先后顺序由所选布局决定
+- 校园经历（候选人背景中若有「校园经历/校园实践/学生工作/社团/竞赛获奖」等）：【必须】独立成块输出，不得省略、不得只在项目里一笔带过；每段含 组织/赛事名 + 职务/角色 + 时间 + 要点列表；应届/无工作经历的候选人把校园经历排在项目经历之前
+- 自我评价：内容为一整段连续文字（约 3-4 句），禁止使用列表/网格/分列/方块布局、禁止分条列举，直接用一段流畅的段落描述候选人的核心优势与职业特质
+- 头像框固定 28mm × 28mm 正圆（宽高必须相等，border-radius: 50%）：无论内容多少、空间多紧，禁止缩小、压扁、拉伸头像；头像 <img> 用 object-fit: cover 保持比例不变形。空间不足时只压缩文字内容与间距，绝不动头像尺寸；未提供头像时显示姓名首字占位
 
 【防溢出与打印 — 最高优先级，违反则视为不合格】
 1. 页面固定为 A4 尺寸：width: 210mm; height: 297mm; overflow: hidden。内容必须严格限制在一页内（210mm×297mm），绝对不允许出现第二页。
-2. 侧边栏和主内容区都使用普通文档流（block 布局），从全文依次排列。禁止使用 flex + margin-top: auto、position: absolute、bottom: 0 等把元素"推到容器底部"的写法。每个模块紧跟上一个模块，间距用固定 margin 值。
+2. 各内容区域内部使用普通文档流（block 布局），从全文依次排列。禁止使用 flex + margin-top: auto、position: absolute、bottom: 0 等把元素"推到容器底部"的写法。每个模块紧跟上一个模块，间距用固定 margin 值。
 3. 严格遵循量化容量预算：（内容高度必须"几乎填满"297mm，但绝不超出）
    - 整体压缩逻辑：如内容可能超出，则主动压缩"内容量"：技能分类精简、教育背景最多 2 段、模块间距从 4mm 降到 2.5mm、正文字号从 13px 降到 12px。压缩后仍超则继续删减，直到一页装得下。严禁通过缩小或压扁头像来腾出空间。
-   - 主内容区（约 285mm 可用高度）预算：项目标题模块（约6mm）+ 最多 3 段 project，每段（项目头 4mm + 技术标签 1 行 5mm + 要点 li 各 6mm，至多 4 条）+ 自我评价段落（标题 6mm + 一段约 40mm 文字）≈ 285mm。内容超预算时先压项目段数（每段 3-4 条 bullet）与自我评价篇幅（一段约 3-4 句），把所有内容收进一页。
-   - 校园经历腾位规则（含校园经历时生效，优先级高于上条的删减顺序）：校园经历为【必保留板块】，绝不允许为容纳项目/自我评价而删除。若整页超预算，按此顺序压缩——先把项目经历减至最多 2 段、再把自我评价缩至 2-3 句、然后每段要点 li 减至 3 条、最后把模块间距由 4mm 降到 2.5mm；校园经历自身最多 2 段、每段 2-3 条要点。
-   - 侧边栏（72mm 宽，约 274mm 高）信息组至多：头像 28mm（固定尺寸，禁止压缩/变形）+ 姓名约 24mm + 联系方式≤5 行 + 教育背景至多 2 段 + 专业技能至多 4 个分类。
-4. 打印自检：生成后从视觉角度复核上下左右四边是否对齐 210mm×297mm 的 A4 版面；若侧边栏底部或主区域底部出现大片空白（>30mm），则说明内容未填满页面，应适度增加字行距、略增字号（≤13.5px）或补充一条要点/一句描述，使两栏正文均在 92%~100% 之间收尾，尽量贴合满页。
-5. 项目经历最多 3 段（含校园经历时最多 2 段），每段 3-4 条 bullet；自我评价为一段连续文字（约 3-4 句），禁止分条列举。超了优先保留最近的、量化成果最突出的条目；校园经历必保留，不参与删减。
-6. 禁止把字号压到 11px 以下，也不允许依赖 margin-collapse 的"假装压缩"；如需减少高度，优先删除内容条目、再调 line-height。
+   - 正文主栏（约 285mm 可用高度）预算：项目标题模块（约6mm）+ 最多 3 段项目，每段（项目头 4mm + 技术标签 1 行 5mm + 要点各 6mm，至多 4 条）+ 自我评价段落（标题 6mm + 一段约 40mm 文字）≈ 285mm。内容超预算时先压项目段数（每段 3-4 条 bullet）与自我评价篇幅（一段约 3-4 句），把所有内容收进一页。
+   - 校园经历腾位规则（含校园经历时生效，优先级高于上条的删减顺序）：校园经历为【必保留板块】，绝不允许为容纳项目/自我评价而删除。若整页超预算，按此顺序压缩——先把项目经历减至最多 2 段、再把自我评价缩至 2-3 句、然后每条要点减至 3 条、最后把模块间距由 4mm 降到 2.5mm；校园经历自身最多 2 段、每段 2-3 条要点。
+   - 辅栏/侧栏（若有；尺寸与可用高度见所选排版布局）信息组至多：头像 28mm（固定尺寸，禁止压缩/变形）+ 姓名约 24mm + 联系方式≤5 行 + 教育背景至多 2 段 + 专业技能至多 4 个分类；单栏布局无辅栏时，上述限额并入正文主栏统筹。
+4. 打印自检：生成后从视觉角度复核上下左右四边是否对齐 210mm×297mm 的 A4 版面；若任一内容区域底部出现大片空白（>30mm），则说明内容未填满页面，应适度增加行距、略增字号（≤13.5px）或补充一条要点/一句描述，使正文在 92%~100% 之间收尾，尽量贴合满页。
+5. 项目经历最多 3 段（含校园经历时最多 2 段），每段 3-4 条要点；自我评价为一段连续文字（约 3-4 句），禁止分条列举。超了优先保留最近的、量化成果最突出的条目；校园经历必保留，不参与删减。
+6. 字体使用 PingFang SC / Microsoft YaHei / Helvetica Neue / Segoe UI / Arial / sans-serif；禁止把字号压到 11px 以下，也不允许依赖 margin-collapse 的"假装压缩"；如需减少高度，优先删除内容条目、再调 line-height。
 7. @media print 规则必须包含：html, body { background: #fff; margin: 0; padding: 0; } .page { margin: 0; box-shadow: none; width: 210mm; height: 297mm; overflow: hidden; }，并设置 -webkit-print-color-adjust: exact 和 print-color-adjust: exact 确保背景色打印出来。
 8. 打印缩放时，所有间距和字号按比例整体缩放，模块间相对位置保持不变，不会出现某模块跳到另一页。
 
 【HTML 结构要求】
-- 输出完整的单文件 HTML，样式全部写在 <style> 中
-- 在 <head> 引入 Bootstrap Icons CDN：<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-- 图标统一使用 Bootstrap Icons（<i class="bi bi-xxx"> 写法）
+- 输出完整的单文件 HTML，样式全部写在单个 <style> 标签中
+- 仅当所选排版布局明确要求使用图标时才引入图标库并在布局描述中使用图标，否则不得添加任何图标元素
 - 不要输出任何解释文字、说明或 markdown 代码块标记（如 ```html），直接以 <!DOCTYPE html> 开头输出 HTML 代码，以 </html> 结尾
-- 每个业务模块必须带 data-resume-section 属性：
-  - basics：侧边栏姓名/求职意向/联系方式区
-  - edu：侧边栏教育背景
-  - skill：侧边栏专业技能
-  - extra：侧边栏其他信息（如荣誉/奖项/证书）
-  - project：主区域项目经历
-  - campus：主区域校园经历（学生工作/社团/竞赛等，候选人有则必须输出此块）
-  - summary：主区域自我评价
+- 每个业务模块必须带 data-resume-section 属性（板块在页面上的摆放位置由所选排版布局决定）：
+  - basics：个人信息（姓名/求职意向/联系方式）
+  - edu：教育背景
+  - skill：专业技能
+  - extra：其他信息（如荣誉/奖项/证书）
+  - project：项目经历
+  - campus：校园经历（学生工作/社团/竞赛等，候选人有则必须输出此块）
+  - summary：自我评价
   - page-style：页面样式（<style> 标签）
-- 头像位置预留圆形占位框（28mm 直径），未提供头像时显示姓名首字
 """
 
 
@@ -328,8 +286,9 @@ SYSTEM_RESTYLE_RESUME = """# 角色
 
 ## modern — 极简单栏现代风
 - 现代极简单栏布局，无卡片无阴影，靠间距和细横线分割各个模块
-- 页面居中，固定 A4 宽度（内容区约 170mm 水平居中）；大姓名顶部居中（约 24px 700），下面一行小字联系方式（居中一行，用 | 分隔）
-- **顶部个人信息区包含：姓名、联系方式、求职意向、教育背景，全部放在页面最上方；求职意向和教育背景属于个人信息区内容，紧跟在联系方式下方，不单独拆成独立大模块。教育背景嵌入到头部区域，紧跟在求职意向下方**
+- 页面居中，固定 A4 宽度（内容区约 170mm 水平居中）
+- **顶部个人信息区采用左右两栏排布（display: flex，垂直居中对齐）：左栏放文字信息——姓名（约 24px 700，左对齐）、下方依次一行小字联系方式（用 | 分隔）、求职意向、教育背景；右栏放圆形头像，靠页面右侧；无头像时右栏显示姓名首字圆形占位**
+- 求职意向和教育背景属于个人信息区内容，紧跟联系方式下方列在左栏内，不单独拆成页面更下方的独立大模块
 - 下方剩余模块顺序：项目经历、实习经历、技能、证书、自我评价（无对应内容的模块可省略，顺序不得打乱）
 - 视觉：黑白灰配色（标题 #111、正文 #333、次要 #777），细灰横线（1px #ddd）作为区块分隔
 - 模块标题加粗、字号略大（15px 700），正文 13px，行高 1.7 舒适

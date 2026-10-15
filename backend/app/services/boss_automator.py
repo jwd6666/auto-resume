@@ -859,7 +859,7 @@ class BossAutomator:
             )
             if clicked:
                 if clicked != "留在此页":
-                    self.log.info(f"已关闭弹窗：{clicked}")
+                    await self._log("INFO", f"已关闭弹窗：{clicked}")
                 return True
             await page.wait_for_timeout(500)
 

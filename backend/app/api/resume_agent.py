@@ -46,7 +46,7 @@ from ..services.resume_provider import (
     add_custom_model, delete_custom_model, update_custom_model,
     get_custom_model, CUSTOM_PROVIDER_KEY, sse_with_heartbeat,
 )
-from ..services.provider_settings import is_cloud_provider, get_cloud_template_id
+from ..services.provider_settings import is_cloud_provider, get_cloud_template_id, DEBUG_LOG_ENABLED
 from ..services.resume_parser import parse_resume_pdf_to_background, stream_resume_pdf_to_background
 from ..services.resume_html import (
     normalize_structured, structured_to_text, ACCENTS,
@@ -823,12 +823,41 @@ def delete_resume(resume_id: int, db: Session = Depends(get_db)):
     return {"message": "Resume deleted"}
 
 
-# 生成阶段可选简历布局（classic = SYSTEM_GENERATE_RESUME 默认的深色侧边栏双栏，无需额外指令）
+# 生成阶段可选简历布局：系统提示已不含任何具体布局，每种布局互斥、每次请求只注入其中一种
 _GENERATE_LAYOUT_HINTS = {
+    "classic": ("""整体布局 — 深色侧边栏双栏：
+- 页面容器 .page：width: 210mm; height: 297mm; display: flex; overflow: hidden; background: #fff; box-shadow 预览用
+- 左侧深色侧边栏 .sidebar：width: 58mm; min-width: 58mm; height: 100%; background: linear-gradient(160deg, #0d1b2a 0%, #16304d 50%, #1b3a5c 100%); color: #e2e8f0; padding: 7mm 5mm 6mm 5mm; flex-direction: column; position: relative
+- 侧边栏右侧加 3px 渐变竖线装饰（::after 伪元素，#00b4d8 → #0077b6）
+- 右侧主内容区 .main：flex: 1; height: 100%; padding: 7mm 7mm 6mm 7mm; overflow: hidden
+
+侧边栏内容 — 从上到下：
+1. 圆形头像框 .avatar-frame：28mm × 28mm，圆形，border: 3px solid #00b4d8，深色渐变背景，居中，阴影 box-shadow: 0 0 16px rgba(0,180,216,0.25)；有头像时用 <img>，无头像时显示姓名首字（.avatar-placeholder，36px 粗体 #90e0ef）
+2. 姓名区 .name-block：姓名 h1（26px 700 #fff，letter-spacing: 3px），下方求职意向 .title（13px #90e0ef，letter-spacing: 1px）
+3. 分割线 .sidebar-divider：1.5px 高，背景 linear-gradient(90deg, #00b4d8, transparent)
+4. 联系方式 .sb-section：标题 .sb-title（14px 700 #fff，左侧 3px #00b4d8 竖条装饰，右侧英文小标签 .en 如 "CONTACT"）；每条 .contact-item：Bootstrap Icons 图标 + 文字（11.5px #cbd5e1）；在 <head> 引入 Bootstrap Icons CDN：<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">；图标用 <i class="bi bi-xxx"> 写法，颜色 color: #48cae4，字号 font-size: 14px；图标 class 对照：电话 bi-telephone、邮箱 bi-envelope、GitHub bi-github、地址 bi-geo-alt
+5. 教育背景 .sb-section：学校名 .edu-school（13px 600 #f1f5f9）、时间 .edu-date（11.5px #94a3b8）、专业 .edu-major（12px #cbd5e1）、补充信息 .edu-meta（11.5px #94a3b8）
+6. 专业技能 .sb-section：每类 .skill-group 含 .skill-label（12px 700 #48cae4）+ .skill-val（11.5px #e2e8f0）
+
+主内容区 — 从上到下：
+1. 项目经历：大标题 .main-sec-title（17px 700 #0d1b2a，左侧 4px 渐变竖条装饰，右侧英文副标签如 "PROJECTS"），下方 2px solid #e2e8f0 横线；每个项目 .project：左侧 2.5px solid #e2e8f0 竖线；项目头 .project-head：项目名 .project-name（14.5px 700 #0d1b2a）+ 角色 .role（12.5px #0077b6，前空7px） + 日期 .project-date（12.5px #64748b，右对齐）；技术标签 .project-tech：每个 .tag 是 inline-block，背景 #f0f7fb，border 1px solid #c5e3f0，color #0369a1，圆角 3px，padding 1px 7px；要点列表 ul li：13px #334155，左侧 5px #00b4d8 圆点，关键词 <b> 用 #0d1b2a 600
+2. 校园经历 .campus-section：大标题同样用 .main-sec-title（右侧英文副标签如 "CAMPUS"），下方复用 .project 结构
+3. 自我评价 .eval-section：顶部 2px solid #e2e8f0 分割线，标题 .eval-title 同样带竖条装饰，内容区 .eval-text：13px #334155，line-height: 1.7
+
+配色体系：
+- 侧边栏背景：linear-gradient(160deg, #0d1b2a, #16304d, #1b3a5c)；强调色/装饰：#00b4d8（青蓝）用于头像边框、竖条装饰、圆点、标签
+- 侧边栏文字层级：标题 #fff，强调 #48cae4 / #90e0ef，正文 #cbd5e1，次要 #94a3b8
+- 主区域文字层级：标题 #0d1b2a，正文 #334155，次要 #64748b，分割线 #e2e8f0
+- 标签背景：#f0f7fb，标签边框：#c5e3f0，标签文字：#0369a1
+
+字体与间距：全局字号 13px，行高 1.6；姓名 26px 700 letter-spacing: 3px；模块标题：侧边栏 14px 700，主区域 17px 700；项目名 14.5px 700，正文要点 13px；技术标签 11.5px；间距整体紧凑：主区域模块间距 3mm、条目/要点间距 2mm；侧边栏各信息组间距 3.5mm、组内条目间距 1.5mm"""),
     "modern": ("现代极简单栏布局，无卡片无阴影，靠间距和细横线分割各个模块；"
                "页面居中，固定 A4 宽度（内容区约 170mm 水平居中，上下留白约 10mm）；"
-               "大姓名顶部居中（24px 700 #111），下面一行小字联系方式（居中一行，用 | 分隔电话/邮箱/地址等）；"
-               "模块顺序：求职意向、教育背景、项目经历、实习经历、技能、证书、自我评价，无对应内容的模块可省略但顺序不得打乱；"
+               "顶部个人信息区采用左右两栏排布（display: flex，垂直居中对齐）："
+               "左栏放文字信息——姓名（24px 700 #111，左对齐）、下方依次一行小字联系方式（用 | 分隔电话/邮箱/地址等）、求职意向、教育背景；"
+               "右栏放圆形头像（28mm 正圆，object-fit: cover），靠页面右侧；"
+               "无头像时右栏显示姓名首字圆形占位；求职意向和教育背景属于个人信息区内容，紧跟联系方式下方列在左栏内，不单独拆成页面更下方的独立大模块；"
+               "下方剩余模块顺序：项目经历、实习经历、校园经历、荣誉证书、自我评价，不得包含其他板块，无对应内容的模块可省略但顺序不得打乱；"
                "候选人有校园经历/学生工作/竞赛时，作为「校园经历」板块紧跟项目经历独立成块（或并入实习经历板块），必须保留不得省略；"
                "视觉：黑白灰配色（标题 #111、正文 #333、次要 #777），细灰横线 1px #ddd 作为区块分隔；"
                "模块标题加粗、字号略大（15px 700 #111），正文 13px、行高 1.7 舒适；"
@@ -858,14 +887,13 @@ _GENERATE_LAYOUT_HINTS = {
 
 
 def _append_layout_directive(user_msg: str, style: str, accent: str) -> str:
-    """把用户选的简历布局作为覆盖指令追加到生成请求（非 classic 时生效）。"""
-    hint = _GENERATE_LAYOUT_HINTS.get((style or "").strip())
-    if not hint:
-        return user_msg
+    """把用户选的简历布局作为本次唯一排版指令追加到生成请求（未知/缺省一律用 classic）。"""
+    key = (style or "").strip()
+    hint = _GENERATE_LAYOUT_HINTS.get(key) or _GENERATE_LAYOUT_HINTS["classic"]
     return (user_msg +
-            f"\n\n---\n\n## 排版布局（本次必须采用此布局，仅覆盖系统提示中「深色侧边栏双栏」的默认整体视觉布局）\n\n{hint}\n\n"
-            f"主题色 {accent} 仍写入 CSS 变量 --accent（若上方布局明确要求黑白灰配色，则 --accent 仅作变量预留、不用于视觉装饰）；"
-            f"无论采用哪种布局，系统提示中的【主内容区板块划分】（包含「校园经历」为必保留独立板块）、【防溢出与打印】【HTML 结构要求】等内容规则均不变，仍必须遵守。")
+            f"\n\n---\n\n## 排版布局（本次唯一采用的布局，严格按此执行，不得混入其它布局风格）\n\n{hint}\n\n"
+            f"主题色 {accent} 写入 CSS 变量 --accent（若上方布局明确要求黑白灰配色，则 --accent 仅作变量预留、不用于视觉装饰）；"
+            f"无论采用哪种布局，系统提示中的【板块内容要求】（包含「校园经历」为必保留独立板块）、【防溢出与打印】【HTML 结构要求】等内容规则均不变，仍必须遵守。")
 
 
 def _merge_profile_background(db: Session, background: str) -> str:
@@ -903,6 +931,37 @@ def _avatar_directive(background: str) -> str:
     )
 
 
+# AI 生成简历调试日志目录（与 ConversationDebugLog 同目录：backend/debug_logs）
+_GENERATE_DEBUG_LOG_DIR = Path(__file__).resolve().parents[2] / "debug_logs"
+
+
+def _write_generate_debug_log(system: str, user_msg: str, response: str, error: str = "") -> None:
+    """把一次「AI 生成简历」的完整请求/响应落盘为 generate_resume_*.log。
+
+    格式沿用旧日志：===== SYSTEM PROMPT / USER MESSAGE / LLM RESPONSE =====，
+    受 DEBUG_LOG_ENABLED 开关控制；写日志失败不影响简历生成主流程。
+    """
+    if not DEBUG_LOG_ENABLED:
+        return
+    try:
+        from datetime import datetime
+        from ..services.provider_core import _resolve_model_info_for_log
+        provider, model = _resolve_model_info_for_log()
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        content = (
+            f"===== META =====\n\n"
+            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | provider: {provider} | model: {model}\n\n"
+            f"===== SYSTEM PROMPT =====\n\n{system}\n\n"
+            f"===== USER MESSAGE =====\n\n{user_msg}\n\n"
+            f"===== {'LLM ERROR' if error and not response else 'LLM RESPONSE'} =====\n\n"
+            f"{response if response else (f'[生成失败] {error}')}\n"
+        )
+        _GENERATE_DEBUG_LOG_DIR.mkdir(exist_ok=True)
+        (_GENERATE_DEBUG_LOG_DIR / f"generate_resume_{stamp}.log").write_text(content, encoding="utf-8")
+    except Exception:
+        pass
+
+
 @router.post("/resumes/generate", response_model=schemas.ResumeResponse)
 async def generate_resume(body: GenerateResumeRequest, db: Session = Depends(get_db)):
     """AI 根据候选人背景 + 目标岗位 JD 直接生成完整简历 HTML，写入磁盘。"""
@@ -926,7 +985,12 @@ async def generate_resume(body: GenerateResumeRequest, db: Session = Depends(get
     user_msg += _avatar_directive(background)
 
 
-    raw = await complete_response(SYSTEM_GENERATE_RESUME, [{"role": "user", "content": user_msg}])
+    try:
+        raw = await complete_response(SYSTEM_GENERATE_RESUME, [{"role": "user", "content": user_msg}])
+    except Exception as e:
+        _write_generate_debug_log(SYSTEM_GENERATE_RESUME, user_msg, "", error=str(e))
+        raise
+    _write_generate_debug_log(SYSTEM_GENERATE_RESUME, user_msg, raw)
     html = _strip_code_fence(raw).strip()
 
     if not html or ("<!DOCTYPE" not in html and "<html" not in html):
@@ -987,11 +1051,13 @@ async def generate_resume_stream(body: GenerateResumeRequest, db: Session = Depe
                 html_parts.append(text)
                 yield f"data: {json.dumps({'type': 'text', 'content': text})}\n\n"
         except Exception as e:
+            _write_generate_debug_log(SYSTEM_GENERATE_RESUME, user_msg, "".join(html_parts), error=str(e))
             yield f"data: {json.dumps({'type': 'error', 'content': f'模型输出中断: {str(e)[:300]}'})}\n\n"
             return
 
         full_html = "".join(html_parts).strip()
         full_html = _strip_code_fence(full_html)
+        _write_generate_debug_log(SYSTEM_GENERATE_RESUME, user_msg, full_html)
 
         if full_html and ("<!DOCTYPE" in full_html or "<html" in full_html):
             q = db.query(models.Resume).filter(models.Resume.job_id == body.job_id)
@@ -1956,6 +2022,7 @@ async def upload_resume(
         f"## 候选人结构化信息\n\n{structured_text}\n\n---\n\n"
         f"请使用主题色 {accent_val}，根据以上信息生成一份完整简历 HTML。"
     )
+    gen_msg = _append_layout_directive(gen_msg, "classic", accent_val)
     raw_html = await complete_response(SYSTEM_GENERATE_RESUME, [{"role": "user", "content": gen_msg}])
     html = _strip_code_fence(raw_html).strip()
 
@@ -2069,6 +2136,7 @@ async def upload_resume_stream(
             f"## 候选人结构化信息\n\n{structured_text}\n\n---\n\n"
             f"请使用主题色 {accent_val}，根据以上信息生成一份完整简历 HTML。"
         )
+        gen_msg = _append_layout_directive(gen_msg, "classic", accent_val)
         html_parts: list[str] = []
         try:
             async for chunk in stream_response(SYSTEM_GENERATE_RESUME, [{"role": "user", "content": gen_msg}]):
