@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Bell, CheckCircle2, Gauge, KeyRound, Loader2, LogIn, RefreshCw, XCircle } from 'lucide-react';
-import { updateApi, type UpdateStatus } from '../api/updateApi';
-import { authApi, type UsageStats } from '../api/authApi';
+import { updateApi, type UpdateStatus } from '../../api/updateApi';
+import { authApi, type UsageStats } from '../../api/authApi';
 
 interface SystemSettingsPageProps {
   userAccount?: string | null;

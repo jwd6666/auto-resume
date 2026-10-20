@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import clsx from 'clsx';
 import { Play, Pause, Square, Trash2, LogIn, RefreshCw, Pencil, ChevronDown, FileText } from 'lucide-react';
-import type { TaskInfo } from '../api/client';
-import { openTaskWS } from '../api/client';
-import { cityLabel } from '../constants/cities';
-import { StatusBadge } from './StatusBadge';
+import type { TaskInfo } from '../../api/client';
+import { openTaskWS } from '../../api/client';
+import { cityLabel } from '../../constants/cities';
+import { StatusBadge } from '../common/StatusBadge';
 
 interface LogEntry { ts: string; level: string; msg: string; }
 

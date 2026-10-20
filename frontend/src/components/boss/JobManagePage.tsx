@@ -4,8 +4,8 @@ import {
   MessageSquare, Download, CheckCircle2, Pencil, X,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { agentApi, type Job, type GreetedItem } from '../api/agentApi';
-import { useJobs } from '../store/useJobs';
+import { agentApi, type Job, type GreetedItem } from '../../api/agentApi';
+import { useJobs } from '../../store/useJobs';
 
 const EMPTY_FORM = { title: '', content: '' };
 

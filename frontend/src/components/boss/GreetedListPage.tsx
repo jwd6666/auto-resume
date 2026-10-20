@@ -3,7 +3,7 @@ import {
   MessageSquare, Trash2, ChevronDown, ChevronRight, Loader2,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { agentApi, type GreetedItem } from '../api/agentApi';
+import { agentApi, type GreetedItem } from '../../api/agentApi';
 
 function formatTime(iso: string) {
   if (!iso) return '';

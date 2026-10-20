@@ -1,6 +1,6 @@
 import { BookOpen, LogIn, LogOut, Settings, User } from 'lucide-react';
 import { useState } from 'react';
-import { authApi } from '../api/authApi';
+import { authApi } from '../../api/authApi';
 
 interface TopNavProps {
   userAccount?: string | null;

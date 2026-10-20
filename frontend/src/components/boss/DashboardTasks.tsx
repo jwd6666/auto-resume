@@ -1,8 +1,8 @@
 import { Eye, Play, Pause, Square, Edit2, Trash2, RefreshCw, LogIn, Plus } from 'lucide-react';
 import clsx from 'clsx';
-import type { TaskInfo } from '../api/client';
-import { cityLabel } from '../constants/cities';
-import { StatusBadge } from './StatusBadge';
+import type { TaskInfo } from '../../api/client';
+import { cityLabel } from '../../constants/cities';
+import { StatusBadge } from '../common/StatusBadge';
 
 interface Props {
   tasks: TaskInfo[];

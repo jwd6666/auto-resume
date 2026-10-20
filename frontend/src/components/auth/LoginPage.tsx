@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Bot, Loader2, Lock, LogIn, User, ShieldAlert } from 'lucide-react';
-import { authApi } from '../api/authApi';
+import { authApi } from '../../api/authApi';
 import { RegisterPage } from './RegisterPage';
 
 interface LoginPageProps {

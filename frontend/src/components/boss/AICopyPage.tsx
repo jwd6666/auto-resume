@@ -5,9 +5,9 @@ import {
   FileText, ImageIcon, Cpu, Zap, Settings, User,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { agentApi, type SettingsInfo, type CustomModel } from '../api/agentApi';
-import { authApi } from '../api/authApi';
-import { authHeaders } from '../api/common';
+import { agentApi, type SettingsInfo, type CustomModel } from '../../api/agentApi';
+import { authApi } from '../../api/authApi';
+import { authHeaders } from '../../api/common';
 import { PersonalInfoModal, loadPersonalInfo, buildPersonalInfoText } from './PersonalInfoModal';
 
 const isDev = location.port === '5173';

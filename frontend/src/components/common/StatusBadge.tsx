@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import type { TaskStatus } from '../api/client';
+import type { TaskStatus } from '../../api/client';
 
 const MAP: Record<TaskStatus, { label: string; cls: string }> = {
   idle: { label: '未登录', cls: 'bg-slate-600/40 text-slate-200' },

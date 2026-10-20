@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { FileText, Inbox } from 'lucide-react';
 import clsx from 'clsx';
-import type { TaskInfo } from '../api/client';
-import { openTaskWS } from '../api/client';
+import type { TaskInfo } from '../../api/client';
+import { openTaskWS } from '../../api/client';
 
 interface LogEntry { ts: string; level: string; msg: string; }
 

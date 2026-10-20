@@ -1,8 +1,8 @@
 /** 模型管理 — 官方模板（云端直连，开箱即用） + 我的模型（本地 sidecar） */
 import { useEffect, useState } from 'react';
 import { Check, Cloud, Loader2, Zap, Plus, Trash2, Pencil, ListChecks, Shield, User } from 'lucide-react';
-import { agentApi, type SettingsInfo, type CustomModel } from '../api/agentApi';
-import { authApi } from '../api/authApi';
+import { agentApi, type SettingsInfo, type CustomModel } from '../../api/agentApi';
+import { authApi } from '../../api/authApi';
 import { AddModelModal, type CustomModelData } from './AddModelModal';
 
 type TabKey = 'cloud' | 'mine';

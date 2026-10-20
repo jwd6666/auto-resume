@@ -1,7 +1,7 @@
 /** 添加模型弹窗 — 自定义配置 + 测试连通性 + 完整错误透传 */
 import { useState } from 'react';
 import { X, Loader2, ChevronDown, Eye, EyeOff, AlertCircle, CheckCircle2 } from 'lucide-react';
-import { agentApi } from '../api/agentApi';
+import { agentApi } from '../../api/agentApi';
 
 export interface CustomModelData {
   api_format: string;

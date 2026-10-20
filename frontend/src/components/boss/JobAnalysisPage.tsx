@@ -5,10 +5,10 @@ import {
   FileText, ImageIcon, Cpu, Settings, BookOpen, ListChecks, HelpCircle,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { agentApi, type CustomModel, type Job } from '../api/agentApi';
-import { authApi } from '../api/authApi';
-import { authHeaders } from '../api/common';
-import { useJobs } from '../store/useJobs';
+import { agentApi, type CustomModel, type Job } from '../../api/agentApi';
+import { authApi } from '../../api/authApi';
+import { authHeaders } from '../../api/common';
+import { useJobs } from '../../store/useJobs';
 
 const isDev = location.port === '5173';
 const isElectron = !!(window as any).autoresume?.apiBase;

@@ -1,8 +1,8 @@
 import clsx from 'clsx';
 import { useEffect, useRef, useState } from 'react';
-import { api, openTaskWS, type TaskInfo } from '../api/client';
-import { cityLabel } from '../constants/cities';
-import { StatusBadge } from './StatusBadge';
+import { api, openTaskWS, type TaskInfo } from '../../api/client';
+import { cityLabel } from '../../constants/cities';
+import { StatusBadge } from '../common/StatusBadge';
 
 interface LogEntry { ts: string; level: string; msg: string; }
 

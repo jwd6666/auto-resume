@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { AlertTriangle, Download, ExternalLink, X } from 'lucide-react';
-import { openDownloadUrl, type UpdateInfo } from '../api/updateApi';
+import { openDownloadUrl, type UpdateInfo } from '../../api/updateApi';
 
 interface UpdateBannerProps {
   update: UpdateInfo;

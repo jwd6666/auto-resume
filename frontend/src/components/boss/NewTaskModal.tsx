@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { X, Plus, Save, Trash2, Pencil, Settings, ChevronDown, Check, Cpu, Image as ImageIcon } from 'lucide-react';
-import { api, type AIConfig, type SubTask, type TaskCreatePayload, type TaskInfo } from '../api/client';
-import { agentApi, type SettingsInfo, type CustomModel } from '../api/agentApi';
-import { authApi } from '../api/authApi';
-import { CITY_OPTIONS } from '../constants/cities';
+import { api, type AIConfig, type SubTask, type TaskCreatePayload, type TaskInfo } from '../../api/client';
+import { agentApi, type SettingsInfo, type CustomModel } from '../../api/agentApi';
+import { authApi } from '../../api/authApi';
+import { CITY_OPTIONS } from '../../constants/cities';
 import clsx from 'clsx';
 
 interface Props {

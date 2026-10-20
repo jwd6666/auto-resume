@@ -1,5 +1,5 @@
 import { AlertTriangle, ExternalLink } from 'lucide-react';
-import { openDownloadUrl, type UpdateInfo } from '../api/updateApi';
+import { openDownloadUrl, type UpdateInfo } from '../../api/updateApi';
 
 interface ForceUpdateGateProps {
   update: UpdateInfo;
