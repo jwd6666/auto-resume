@@ -1,7 +1,7 @@
 import clsx from 'clsx';
 import {
   Home, ListTodo, Users,
-  Sparkles, Wand2, BarChart3, Plus, Settings,
+  Sparkles, Wand2, BarChart3, Plus, Settings, MessageCircleQuestion,
   PanelLeftClose, PanelLeftOpen,
   Briefcase, Building2,
 } from 'lucide-react';
@@ -34,17 +34,18 @@ const groups: MenuGroup[] = [
       { icon: <Users size={17} />, label: '模型管理', id: 'accounts' },
     ],
   },
-  {
-    title: '平台',
-    items: [
-      { icon: <Building2 size={17} />, label: 'BOSS配置', id: 'boss-config' },
-    ],
-  },
+  // {
+  //   title: '平台',
+  //   items: [
+  //     { icon: <Building2 size={17} />, label: 'BOSS配置', id: 'boss-config' },
+  //   ],
+  // },
   {
     title: '智能工具',
     badge: 'BETA',
     items: [
       { icon: <Sparkles size={17} />, label: '简历优化 Agent', id: 'resume', badge: 'new' },
+      { icon: <MessageCircleQuestion size={17} />, label: 'AI 模拟面试', id: 'interview-sim', badge: 'new' },
       { icon: <Wand2 size={17} />, label: 'AI 话术生成', id: 'ai-copy', badge: 'new' },
       { icon: <BarChart3 size={17} />, label: '职位分析', id: 'job-analysis', badge: 'new' },
     ],

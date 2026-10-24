@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { X, Plus, Save, Trash2, Pencil, Settings, ChevronDown, Check, Cpu, Image as ImageIcon } from 'lucide-react';
+import { X, Plus, Save, Trash2, Pencil, Settings, ChevronDown, Check, Cpu, Image as ImageIcon, User } from 'lucide-react';
 import { api, type AIConfig, type SubTask, type TaskCreatePayload, type TaskInfo } from '../../api/client';
 import { agentApi, type SettingsInfo, type CustomModel } from '../../api/agentApi';
 import { authApi } from '../../api/authApi';
 import { CITY_OPTIONS } from '../../constants/cities';
+import { PersonalInfoModal, loadPersonalInfo, buildPersonalInfoText } from './PersonalInfoModal';
 import clsx from 'clsx';
 
 interface Props {
@@ -118,6 +119,7 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [personalInfoOpen, setPersonalInfoOpen] = useState(false);
 
   const reset = () => {
     setName('');
@@ -137,6 +139,7 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
     setImageError(null);
     setSubmitting(false);
     setError(null);
+    setPersonalInfoOpen(false);
   };
 
   // 进入编辑模式时把 task 的字段灌入表单
@@ -271,6 +274,7 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
       },
       limit: Math.max(1, Math.min(200, s.limit)),
     }));
+    const resumeText = aiResume.trim() || buildPersonalInfoText();
     return {
       name: name.trim(),
       sub_tasks,
@@ -285,7 +289,7 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
         api_key: '',
         base_url: '',
         model: aiModel.trim(),
-        resume: aiResume.trim(),
+        resume: resumeText,
         expect_jd: aiExpectJd.trim(),
       },
       greet_image: greetImage || null,
@@ -566,26 +570,38 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
                   </div>
                 </div>
 
-                <Field label="个人简介/技能摘要（选填，让 AI 生成更有针对性的招呼语）">
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-400">个人简介/技能摘要</span>
+                    <button
+                      type="button"
+                      onClick={() => setPersonalInfoOpen(true)}
+                      className="flex items-center gap-1 text-xs text-accent-blue hover:text-accent-blue/80 transition-colors"
+                    >
+                      <User size={11} />
+                      填写个人信息
+                    </button>
+                  </div>
                   <textarea
                     value={aiResume}
                     onChange={(e) => setAiResume(e.target.value)}
                     rows={3}
                     className="input"
-                    placeholder="如：3年Python后端开发经验，熟悉 Django/Flask 框架，有微服务架构和 MySQL 优化经验，了解 Docker/K8s 部署"
+                    placeholder="如：3年Python后端开发经验，熟悉 Django/Flask 框架，有微服务架构和 MySQL 优化经验，了解 Docker/K8s 部署&#10;&#10;提示：点击上方「填写个人信息」可填写学校背景、项目经历等，系统会自动整合用于生成招呼语"
                   />
-                </Field>
-                <Field label="期望岗位描述（选填，AI 据此判断 JD 是否匹配）">
+                  <span className="text-[11px] text-slate-500">留空则使用「个人信息」面板中填写的内容（学校、经历等），两者都填则优先使用此处</span>
+                </div>
+                <Field label="期望岗位描述（选填，AI 优先据此判断 JD 是否匹配；不填则根据搜索关键词判断）">
                   <textarea
                     value={aiExpectJd}
                     onChange={(e) => setAiExpectJd(e.target.value)}
                     rows={4}
                     className="input"
-                    placeholder="如：AI 全栈工程师，负责大模型应用开发、Agent/RAG 系统构建、前后端开发。岗位必须使用编程语言做软件/模型工程开发，不包含 AI 内容创作（短剧/漫画/绘画）、AI 运营推广/直播/销售等非工程岗。"
+                    placeholder="如：AI 全栈工程师，负责大模型应用开发、Agent/RAG 系统构建、前后端开发。岗位必须使用编程语言做软件/模型工程开发，不包含 AI 内容创作（短剧/漫画/绘画）、AI 运营推广/直播/销售等非工程岗。&#10;&#10;描述你期望的岗位方向，AI 会严格按此判断匹配度"
                   />
                 </Field>
                 <div className="text-xs text-slate-500">
-                  上述模型与背景信息同时用于“AI 匹配筛选”和“AI 生成招呼语”：只勾选匹配筛选时会用默认招呼语；勾选生成招呼语时才用 AI 文案（AI 失败时回退默认）。
+                  上述模型与背景信息同时用于"AI 匹配筛选"和"AI 生成招呼语"：只勾选匹配筛选时会用默认招呼语；勾选生成招呼语时才用 AI 文案（AI 失败时回退默认）。期望岗位描述优先用于判断匹配，未填写则按搜索关键词判断。
                 </div>
               </>
             )}
@@ -695,6 +711,8 @@ export function NewTaskModal({ open, onClose, onCreated, editing }: Props) {
           </button>
         </div>
       </div>
+
+      <PersonalInfoModal open={personalInfoOpen} onClose={() => setPersonalInfoOpen(false)} />
 
       <style>{`
         .input {

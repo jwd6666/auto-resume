@@ -18,6 +18,7 @@ import { SystemSettingsPage } from './components/settings/SystemSettingsPage';
 import { ResumeAgentPage } from './components/resume/ResumeAgentPage';
 import { AICopyPage } from './components/boss/AICopyPage';
 import { JobAnalysisPage } from './components/boss/JobAnalysisPage';
+import { InterviewSimPage } from './components/interview/InterviewSimPage';
 import { JobManagePage } from './components/boss/JobManagePage';
 import { LoginGate } from './components/auth/LoginGate';
 import { api, type TaskInfo } from './api/client';
@@ -231,6 +232,7 @@ export default function App() {
       case 'ai-copy': return null;
       case 'job-manage': return loggedIn ? <JobManagePage /> : <LoginGate fullPage title="岗位管理需要登录后使用" subtitle="登录后即可管理岗位与打招呼记录" />;
       case 'job-analysis': return null;
+      case 'interview-sim': return null;
       case 'boss-config': return renderPlaceholder('BOSS配置', '配置 BOSS直聘 平台相关参数');
       case 'system-settings': return <SystemSettingsPage userAccount={userAccount} />;
       default: return renderHome();
@@ -317,7 +319,11 @@ export default function App() {
           <div className={`h-full ${activeMenu === 'job-analysis' ? '' : 'hidden'}`}>
             <JobAnalysisPage />
           </div>
-          {activeMenu !== 'resume' && activeMenu !== 'ai-copy' && activeMenu !== 'job-analysis' && renderContent()}
+          {/* InterviewSimPage 始终挂载，切页面时只隐藏不卸载，保留面试对话 */}
+          <div className={`h-full ${activeMenu === 'interview-sim' ? '' : 'hidden'}`}>
+            <InterviewSimPage />
+          </div>
+          {activeMenu !== 'resume' && activeMenu !== 'ai-copy' && activeMenu !== 'job-analysis' && activeMenu !== 'interview-sim' && renderContent()}
         </main>
       </div>
       <NewTaskModal

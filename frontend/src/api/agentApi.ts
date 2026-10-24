@@ -101,6 +101,18 @@ export interface Scorecard {
   needs_verification: string[];
 }
 
+export interface InterviewQuestionnaireItem {
+  id: string;
+  category: string;
+  text: string;
+}
+
+export interface InterviewQuestionnaire {
+  categories_used: string[];
+  items: InterviewQuestionnaireItem[];
+  questionnaire_markdown: string;
+}
+
 export interface CustomModel {
   id: string;
   api_format: string;
@@ -399,6 +411,119 @@ export const agentApi = {
     }
   },
 
+  // ── Interview Sim ──
+
+  /** 可供选择的面试题类型 */
+  async getInterviewCategories(): Promise<string[]> {
+    const r = await fetch(`${AGENT}/interview-sim/question-categories`, { headers: authHeaders() });
+    if (!r.ok) throw new Error(await r.text());
+    const data = await r.json();
+    return data.categories || [];
+  },
+
+  /** 为本场面试抽样题单（不调用 LLM） */
+  async getInterviewQuestionnaire(params: {
+    jobId: number;
+    resumeId: number;
+    total?: number;
+    categories?: string[];
+    backgroundProfileId?: number;
+  }): Promise<InterviewQuestionnaire> {
+    const q = new URLSearchParams({
+      job_id: String(params.jobId),
+      resume_id: String(params.resumeId),
+      total: String(params.total ?? 7),
+    });
+    if (params.backgroundProfileId != null) {
+      q.set('background_profile_id', String(params.backgroundProfileId));
+    }
+    for (const c of params.categories || []) q.append('categories', c);
+    const r = await fetch(`${AGENT}/interview-sim/questionnaire?${q.toString()}`, { headers: authHeaders() });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+
+  /** 模拟面试流式对话：AI 面试官按题单提问/追问 */
+  async *interviewSimStream(params: {
+    jobId: number;
+    resumeId: number;
+    messages: { role: string; content: string }[];
+    userBackground?: string;
+    questionnaireMarkdown?: string;
+    signal?: AbortSignal;
+  }): AsyncGenerator<{ type: 'text' | 'error' | 'done'; content?: string }> {
+    const r = await fetch(`${AGENT}/interview-sim/stream`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        job_id: params.jobId,
+        resume_id: params.resumeId,
+        messages: params.messages,
+        user_background: params.userBackground || undefined,
+        questionnaire_markdown: params.questionnaireMarkdown || undefined,
+      }),
+      signal: params.signal,
+    });
+    if (!r.ok || !r.body) {
+      let msg = '模拟面试请求失败';
+      try { msg = await r.text(); } catch { /* */ }
+      throw new Error(msg);
+    }
+
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.type === 'text') yield { type: 'text', content: data.content };
+              else if (data.type === 'error') { yield { type: 'error', content: data.content }; return; }
+              else if (data.type === 'done') { yield { type: 'done' }; return; }
+            } catch { /* skip */ }
+          }
+        }
+      }
+    } catch (e: any) {
+      yield { type: 'error', content: `连接中断: ${e.message || '网络错误'}` };
+    }
+  },
+
+  /** 面试结束后生成复盘报告（Markdown） */
+  async generateInterviewReport(data: {
+    jobId: number;
+    resumeId: number;
+    messages: { role: string; content: string }[];
+    userBackground?: string;
+  }): Promise<{ report: string }> {
+    const r = await fetch(`${AGENT}/interview-sim/report`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        job_id: data.jobId,
+        resume_id: data.resumeId,
+        messages: data.messages,
+        user_background: data.userBackground || undefined,
+      }),
+    });
+    if (!r.ok) {
+      let msg = '生成面试报告失败';
+      try { msg = await r.text(); } catch { /* */ }
+      throw new Error(msg);
+    }
+    return r.json();
+  },
+
   /** 获取简历磁盘文件最新内容 */
   async getResumeFile(resumeId: number): Promise<{ resume_id: number; html: string; path: string }> {
     const r = await fetch(`${AGENT}/resumes/${resumeId}/file`, { headers: authHeaders() });
@@ -543,7 +668,7 @@ export const agentApi = {
     return r.json();
   },
 
-  /** 上传候选人头像 → 固定保存到 data/avatars/avatar.jpg，返回本地绝对路径（生成简历时发给模型引用） */
+  /** 上传候选人头像 → 固定保存到安装目录 data/avatars，返回本地绝对路径（生成简历时发给模型引用） */
   async uploadAvatar(file: File): Promise<{ path: string; filename: string }> {
     const fd = new FormData();
     fd.append('file', file);

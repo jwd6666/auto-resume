@@ -1,6 +1,6 @@
 {
   "name": "auto-resume",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "BOSS 直聘自动打招呼桌面助手（多账号独立窗口）",
   "private": true,
   "main": "electron/main.cjs",

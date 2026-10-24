@@ -2732,6 +2732,11 @@ _SYSTEM_PROMPT_GREETING = """你是一位资深求职打招呼助手。你的任
 - 不要出现"我看了贵公司的招聘"等套话
 - 如果已有之前生成的话术，确保新话术从不同角度切入，避免与已有话术雷同
 
+## 严禁编造（最高优先级）
+- 话术中提到的技能、经验、项目、学校、工作年限等信息，必须是求职者背景中明确包含的
+- 禁止根据JD反向编造求职者不具备的经验或技能
+- 如果背景信息不足，宁可只写泛化表达（如"对该领域有浓厚兴趣"），也绝不凭空捏造具体经历
+
 ## 风格说明
 根据用户指定的风格生成话术：
 - experience-match：直接亮年限+核心技能，对标JD要求，适用于经验高度匹配的岗位
@@ -2758,7 +2763,7 @@ async def generate_greetings(request: GenerateGreetingsRequest):
 
     sections = [f"## 岗位JD信息\n{jd}"]
     if request.resume and request.resume.strip():
-        sections.append(f"## 求职者背景\n{request.resume.strip()[:1000]}")
+        sections.append(f"## 求职者真实背景（话术必须基于此信息，禁止编造未提及的经历/技能/项目）\n{request.resume.strip()[:1000]}")
     if request.expect_jd and request.expect_jd.strip():
         sections.append(f"## 期望岗位描述\n{request.expect_jd.strip()[:1000]}")
     sections.append(f"## 生成要求\n风格：{style_info.name}（{style_info.description}）")
